@@ -13,6 +13,7 @@
 
 #include "fsl-ls2088a.dtsi"
 #include "fsl-ls208xa-rdb.dtsi"
+#include "external-modem-pcie.dtsi"
 
 / {
 	model = "Freescale Layerscape 2088A RDB Board";

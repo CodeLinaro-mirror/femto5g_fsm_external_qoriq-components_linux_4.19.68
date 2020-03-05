@@ -379,7 +379,8 @@ void perf_trace_del(struct perf_event *p_event, int flags)
 	 * the right per-cpu hlist.
 	 */
 	if (!tp_event->class->reg(tp_event, TRACE_REG_PERF_DEL, p_event))
-		hlist_del_rcu(&p_event->hlist_entry);
+		if (!hlist_unhashed(&p_event->hlist_entry))
+			hlist_del_rcu(&p_event->hlist_entry);
 }
 
 void *perf_trace_buf_alloc(int size, struct pt_regs **regs, int *rctxp)

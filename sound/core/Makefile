@@ -14,9 +14,8 @@ snd-$(CONFIG_SND_OSSEMUL) += sound_oss.o
 snd-$(CONFIG_SND_VMASTER) += vmaster.o
 snd-$(CONFIG_SND_JACK)	  += ctljack.o jack.o
 
-snd-pcm-y := pcm.o pcm_native.o pcm_lib.o pcm_misc.o \
+snd-pcm-y := pcm.o pcm_lib.o pcm_misc.o \
 		pcm_memory.o memalloc.o
-snd-pcm-$(CONFIG_SND_PCM_TIMER) += pcm_timer.o
 snd-pcm-$(CONFIG_SND_DMA_SGBUF) += sgbuf.o
 snd-pcm-$(CONFIG_SND_PCM_ELD) += pcm_drm_eld.o
 snd-pcm-$(CONFIG_SND_PCM_IEC958) += pcm_iec958.o
@@ -28,13 +27,11 @@ CFLAGS_pcm_native.o := -I$(src)
 snd-pcm-dmaengine-objs := pcm_dmaengine.o
 
 snd-rawmidi-objs  := rawmidi.o
-snd-timer-objs    := timer.o
 snd-hrtimer-objs  := hrtimer.o
 snd-rtctimer-objs := rtctimer.o
 snd-hwdep-objs    := hwdep.o
 snd-seq-device-objs := seq_device.o
 
-snd-compress-objs := compress_offload.o
 
 obj-$(CONFIG_SND) 		+= snd.o
 obj-$(CONFIG_SND_HWDEP)		+= snd-hwdep.o

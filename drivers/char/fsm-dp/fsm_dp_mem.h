@@ -76,21 +76,21 @@ struct fsm_dp_mempool_stats {
 	unsigned long buf_get_err;
 };
 
+#define FSM_DP_MEMPOOL_SIG 0xdeadbeef
+#define FSM_DP_MEMPOOL_SIG_BAD 0xbeefdead
+
 struct fsm_dp_mempool {
-	struct list_head list;
+	unsigned int signature;
 	struct fsm_dp_drv *drv;
 	enum fsm_dp_mem_type type;
 	struct fsm_dp_ring ring;
 	struct fsm_dp_mem mem;
 	atomic_t ref;
+	atomic_t out_xmit;
 	struct fsm_dp_mempool_stats stats;
 	char *dummy_buf;
 };
 
-struct fsm_dp_mempool_task {
-	struct delayed_work dwork;
-	struct list_head mempool_head;
-};
 
 struct fsm_dp_mempool *fsm_dp_mempool_alloc(
 	struct fsm_dp_drv *pdrv,
@@ -101,10 +101,6 @@ struct fsm_dp_mempool *fsm_dp_mempool_alloc(
 
 void fsm_dp_mempool_free(struct fsm_dp_mempool *mempool);
 
-int fsm_dp_mempool_task_init(struct fsm_dp_mempool_task *task);
-
-void fsm_dp_mempool_task_cleanup(struct fsm_dp_mempool_task *task);
-
 int fsm_dp_mempool_get_cfg(
 	struct fsm_dp_mempool *mempool,
 	struct fsm_dp_mempool_cfg *cfg);
@@ -114,9 +110,15 @@ void *fsm_dp_mempool_get_buf(struct fsm_dp_mempool *mempool);
 
 static inline bool fsm_dp_mempool_hold(struct fsm_dp_mempool *mempool)
 {
-	if (mempool && atomic_inc_not_zero(&mempool->ref))
-		return true;
-	return false;
+	bool ret = false;
+
+	if (!mempool)
+		return ret;
+	smp_mb__before_atomic();
+	if (atomic_inc_not_zero(&mempool->ref))
+		ret = true;
+	smp_mb__after_atomic();
+	return ret;
 }
 
 static inline void __fsm_dp_mempool_hold(struct fsm_dp_mempool *mempool)

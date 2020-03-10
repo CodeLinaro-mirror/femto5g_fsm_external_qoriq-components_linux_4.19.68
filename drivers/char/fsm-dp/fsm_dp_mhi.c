@@ -126,10 +126,23 @@ static void __mhi_ul_xfer_cb(
 		mempool = fsm_dp_find_mempool(drv, addr, false);
 
 	if (unlikely(mempool == NULL)) {
-		FSM_DP_DEBUG("%s: cannot find mempool, addr=%p\n",
+		FSM_DP_ERROR("%s: cannot find mempool, addr=%p\n",
 			  __func__, addr);
 		return;
 	}
+	if (mempool->signature != FSM_DP_MEMPOOL_SIG) {
+		FSM_DP_ERROR("%s: mempool %p signature 0x%x error, expect 0x%x\n",
+			  __func__, mempool, mempool->signature, FSM_DP_MEMPOOL_SIG);
+		return;
+	}
+
+	if (atomic_read(&mempool->out_xmit) == 0) {
+		FSM_DP_ERROR("%s: mempool out xmit cnt should not be zero\n",
+			  __func__, mempool);
+		return;
+	}
+
+	atomic_dec(&mempool->out_xmit);
 
 	switch (mempool->type) {
 	case FSM_DP_MEM_TYPE_UL:

@@ -183,7 +183,6 @@ struct fsm_dp_drv {
 	struct mutex cdev_lock;
 	struct list_head cdev_head;
 	struct mutex mempool_lock;
-	struct fsm_dp_mempool_task mempool_task;
 	atomic_t tx_seqnum;
 	struct fsm_dp_mempool *mempool[FSM_DP_MEM_TYPE_LAST];
 	struct fsm_dp_rxqueue rxq[FSM_DP_RX_TYPE_LAST];

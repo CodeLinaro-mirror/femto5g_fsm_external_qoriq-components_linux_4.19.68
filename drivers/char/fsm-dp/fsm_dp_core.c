@@ -68,12 +68,16 @@ static void handle_rx_loopback(
 		msghdr = (struct fsm_dp_msghdr *) iov[i].iov_base;
 		msghdr->type = FSM_DP_MSG_TYPE_LPBK_RSP;
 		fsm_dp_set_buf_state(msghdr, FSM_DP_BUF_STATE_KERNEL_XMIT_DMA);
+		atomic_inc(&mempool->out_xmit);
 		dma_addr_array[i] = 0;
 	}
 	ret = fsm_dp_tx(drv, iov, num, 0, dma_addr_array);
 	if (ret) {
 		FSM_DP_DEBUG("%s: failed to send response\n", __func__);
 		drv->loopback.stats.rx_err++; /* update error stats */
+		fsm_dp_set_buf_state(msghdr,
+			FSM_DP_BUF_STATE_KERNEL_XMIT_DMA_COMP);
+		atomic_dec(&mempool->out_xmit);
 		goto free_rxbuf;
 	}
 
@@ -92,43 +96,53 @@ static void handle_tx_loopback(
 	struct fsm_dp_mempool *tx_mempool;
 	struct fsm_dp_mempool *mempool;
 	struct fsm_dp_rxqueue *rxq;
-	unsigned int offset;
+	unsigned int offset, toffset;
 	void *dst;
+	struct fsm_dp_buf_cntrl *p;
+	int err = FSM_DP_XMIT_OK;
 
 	tx_mempool = fsm_dp_find_mempool(drv, job->data, true);
 	if (tx_mempool == NULL) {
 		drv->loopback.stats.tx_drop++;
-		FSM_DP_DEBUG("%s: cannot to find source memory pool\n",
+		FSM_DP_ERROR("%s: cannot to find source memory pool\n",
 			  __func__);
 		return;
 	}
+	toffset = job->data - tx_mempool->mem.loc.page_base +
+			tx_mempool->mem.loc.page_off;
+	toffset = toffset % fsm_dp_buf_true_size(&mempool->mem);
+	p = (struct fsm_dp_buf_cntrl *)(job->data - toffset);
 
 	if (!fsm_dp_rx_type_is_valid(job->dest)) {
 		drv->loopback.stats.tx_err++;
 		FSM_DP_ERROR("%s: invalid dest %u\n",
 			  __func__, job->dest);
-		goto free_txbuf;
+		err = -EINVAL;
+		goto done_txbuf;
 	}
 
 	rxq = &drv->rxq[job->dest];
 	if (!atomic_read(&rxq->refcnt)) {
 		drv->loopback.stats.tx_drop++;
 		FSM_DP_DEBUG("%s: drop packet\n", __func__);
-		goto free_txbuf;
+		err = -EIO;
+		goto done_txbuf;
 	}
 
 	mempool = drv->mempool[FSM_DP_MEM_TYPE_UL];
 	if (mempool == NULL) {
 		drv->loopback.stats.tx_err++;
 		FSM_DP_ERROR("%s: UL memory is not created\n", __func__);
-		goto free_txbuf;
+		err = -EIO;
+		goto done_txbuf;
 	}
 
 	dst = fsm_dp_mempool_get_buf(mempool);
 	if (dst == NULL) {
 		drv->loopback.stats.tx_err++;
 		FSM_DP_ERROR("%s: failed to get buffer\n", __func__);
-		goto free_txbuf;
+		err = -ENOMEM;
+		goto done_txbuf;
 	}
 	memcpy(dst, job->data, job->length);
 	offset = vaddr_offset(dst, mempool->mem.loc.page_base);
@@ -139,15 +153,17 @@ static void handle_tx_loopback(
 		drv->loopback.stats.tx_err++;
 		FSM_DP_ERROR("%s: rx enqueue failed!\n", __func__);
 		fsm_dp_mempool_put_buf(mempool, dst);
-		goto free_txbuf;
+		err = -EIO;
+		goto done_txbuf;
 	}
 
 	drv->loopback.stats.tx_cnt++;
 	wake_up(&rxq->wq);
 
-free_txbuf:
-	if (tx_mempool->type != FSM_DP_MEM_TYPE_DL_L1_DATA)
-		fsm_dp_mempool_put_buf(tx_mempool, job->data);
+done_txbuf:
+	atomic_dec(&tx_mempool->out_xmit);
+	p->state = FSM_DP_BUF_STATE_KERNEL_XMIT_DMA_COMP;
+	p->xmit_status = err;
 }
 
 static void loopback_cb(struct work_struct *work)
@@ -464,7 +480,7 @@ static int fsm_dp_rx_init(struct fsm_dp_drv *pdrv)
 	if (prop && len == (sizeof(unsigned int) * 2))
 		of_prop = prop;
 
-	pdrv->mempool[FSM_DP_MEM_TYPE_UL] = fsm_dp_mempool_alloc(
+	if (!fsm_dp_mempool_alloc(
 		pdrv,
 		FSM_DP_MEM_TYPE_UL,
 		(of_prop) ?
@@ -473,10 +489,9 @@ static int fsm_dp_rx_init(struct fsm_dp_drv *pdrv)
 		(of_prop) ?
 		be32_to_cpu(of_prop[1]) :
 		DEFAULT_FSM_MEM_UL_BUF_CNT,
-		false); /* no dma map yet since io dev is not ready */
-	if (pdrv->mempool[FSM_DP_MEM_TYPE_UL] == NULL) {
+		false)) {
 		FSM_DP_ERROR("%s: failed to allocate UL memory pool!\n",
-			  __func__);
+				  __func__);
 		return -ENOMEM;
 	}
 
@@ -598,10 +613,6 @@ static int fsm_dp_core_init(struct fsm_dp_drv *pdrv)
 
 	of_dma_configure(dev, dev->of_node, true);
 
-	ret = fsm_dp_mempool_task_init(&pdrv->mempool_task);
-	if (ret)
-		goto exit;
-
 	ret = fsm_dp_rx_init(pdrv);
 	if (ret)
 		goto exit;
@@ -622,7 +633,6 @@ static void fsm_dp_core_cleanup(struct fsm_dp_drv *pdrv)
 	fsm_dp_rx_cleanup(pdrv);
 	fsm_dp_loopback_cleanup(&pdrv->loopback);
 	fsm_dp_test_cleanup(pdrv);
-	fsm_dp_mempool_task_cleanup(&pdrv->mempool_task);
 	kfree(pdrv);
 }
 

@@ -440,6 +440,7 @@ static struct fsm_dp_mempool *__fsm_dp_mempool_alloc(
 
 	mempool->drv = pdrv;
 	mempool->type = type;
+	mempool->signature = FSM_DP_MEMPOOL_SIG;
 
 	/*
 	 * allocate dummy buffer for out of buffer condition
@@ -488,13 +489,37 @@ static void fsm_dp_mempool_release(struct fsm_dp_mempool *mempool)
 	if (mempool) {
 		enum fsm_dp_mem_type type = mempool->type;
 
+		mempool->signature = FSM_DP_MEMPOOL_SIG_BAD;
+		wmb();
 		fsm_dp_mem_cleanup(&mempool->mem);
 		fsm_dp_ring_cleanup(&mempool->ring);
 		kfree(mempool->dummy_buf);
 		kfree(mempool);
-
 		FSM_DP_DEBUG("%s: mempool is freed, type=%u\n", __func__, type);
 	}
+}
+
+#define FSM_DP_MEMPOOL_RELEASE_SLEEP 20 /* 20 ms */
+void fsm_dp_mempool_release_no_delay(struct fsm_dp_mempool *mempool)
+{
+	struct fsm_dp_buf_cntrl *p;
+	unsigned int out_xmit, out_xmit1;
+
+	if (!mempool)
+		return;
+	/* wait for all tx buffers done */
+
+	out_xmit1 = atomic_read(&mempool->out_xmit);
+	if (out_xmit1) {
+		msleep(FSM_DP_MEMPOOL_RELEASE_SLEEP);
+		out_xmit = atomic_read(&mempool->out_xmit);
+		if (out_xmit)
+			FSM_DP_ERROR(
+				"mempool %p out_xmit changed from %d to %d after %d ms\n",
+				mempool, out_xmit1, out_xmit, FSM_DP_MEMPOOL_RELEASE_SLEEP);
+	}
+
+	fsm_dp_mempool_release(mempool);
 }
 
 int fsm_dp_mempool_dma_map(
@@ -561,11 +586,13 @@ struct fsm_dp_mempool *fsm_dp_mempool_alloc(
 					buf_cnt, ring_sz, may_dma_map);
 	if (mempool == NULL)
 		goto done;
-
+	atomic_set(&mempool->ref, 1);
+	atomic_set(&mempool->out_xmit, 0);
 	pdrv->mempool[type] = mempool;
+	goto done;
 mempool_hold:
-	__fsm_dp_mempool_hold(mempool);
-
+	if (!fsm_dp_mempool_hold(mempool))
+		mempool = NULL;
 done:
 	mutex_unlock(&pdrv->mempool_lock);
 	return mempool;
@@ -573,18 +600,14 @@ done:
 
 void fsm_dp_mempool_free(struct fsm_dp_mempool *mempool)
 {
-	if (mempool) {
-		struct fsm_dp_drv *pdrv = mempool->drv;
-		struct fsm_dp_mempool_task *task = &pdrv->mempool_task;
+	struct fsm_dp_drv *pdrv = mempool->drv;
 
-		mutex_lock(&pdrv->mempool_lock);
-		pdrv->mempool[mempool->type] = NULL;
-		list_add_tail(&mempool->list, &task->mempool_head);
-		mutex_unlock(&pdrv->mempool_lock);
-		mod_delayed_work(system_wq,
-				 &task->dwork,
-				 FSM_DP_MEMPOOL_RELEASE_DELAY);
-	}
+	if (!mempool)
+		return;
+	fsm_dp_mempool_release_no_delay(mempool);
+	pdrv->mempool[mempool->type] = NULL;
+	wmb();
+	return;
 }
 
 int fsm_dp_mempool_get_cfg(
@@ -741,57 +764,4 @@ struct fsm_dp_mempool *fsm_dp_find_mempool(
 		}
 	}
 	return NULL;
-}
-
-static void fsm_dp_mempool_release_work(struct work_struct *work)
-{
-	struct fsm_dp_mempool_task *task;
-	struct fsm_dp_drv *pdrv;
-	struct fsm_dp_mempool *mempool;
-
-	task = container_of(to_delayed_work(work),
-			    struct fsm_dp_mempool_task,
-			    dwork);
-	pdrv = container_of(task, struct fsm_dp_drv, mempool_task);
-
-	while (1) {
-		mutex_lock(&pdrv->mempool_lock);
-		mempool = list_first_entry_or_null(&task->mempool_head,
-						   struct fsm_dp_mempool,
-						   list);
-		mutex_unlock(&pdrv->mempool_lock);
-		if (!mempool)
-			break;
-		list_del(&mempool->list);
-		fsm_dp_mempool_release(mempool);
-	}
-}
-
-int fsm_dp_mempool_task_init(struct fsm_dp_mempool_task *task)
-{
-	INIT_LIST_HEAD(&task->mempool_head);
-	INIT_DELAYED_WORK(&task->dwork, fsm_dp_mempool_release_work);
-	return 0;
-}
-
-void fsm_dp_mempool_task_cleanup(struct fsm_dp_mempool_task *task)
-{
-	struct fsm_dp_drv *pdrv = container_of(task,
-					       struct fsm_dp_drv,
-					       mempool_task);
-	struct fsm_dp_mempool *mempool;
-
-	cancel_delayed_work_sync(&task->dwork);
-
-	mutex_lock(&pdrv->mempool_lock);
-	while (1) {
-		mempool = list_first_entry_or_null(&task->mempool_head,
-						   struct fsm_dp_mempool,
-						   list);
-		if (!mempool)
-			break;
-		list_del(&mempool->list);
-		fsm_dp_mempool_release(mempool);
-	}
-	mutex_unlock(&pdrv->mempool_lock);
 }

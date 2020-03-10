@@ -162,6 +162,7 @@ static int __cdev_tx(
 			p->state = FSM_DP_BUF_STATE_KERNEL_XMIT_DMA;
 			p->xmit_status = FSM_DP_XMIT_IN_PROGRESS;
 		}
+		atomic_inc(&mempool->out_xmit);
 #endif
 		if (mempool->mem.loc.dma_mapped &&
 				cdev->tx_mode != TX_MODE_LOOPBACK) {
@@ -194,6 +195,7 @@ static int __cdev_tx(
 			p = (struct fsm_dp_buf_cntrl *)
 				(iov[n].iov_base - iov_off_array[n]);
 			p->state = FSM_DP_BUF_STATE_KERNEL_XMIT_DMA_COMP;
+			atomic_dec(&mempool->out_xmit);
 			p->xmit_status = ret;
 		}
 #endif
@@ -442,7 +444,8 @@ static void __mempool_mem_vma_open(struct vm_area_struct *vma)
 		struct fsm_dp_mempool *mempool = *mempool_vma->pp_mempool;
 
 		mempool_vma->vma[FSM_DP_MMAP_TYPE_MEM] = vma;
-		__fsm_dp_mempool_hold(mempool);
+		if (!fsm_dp_mempool_hold(mempool))
+			atomic_dec(refcnt);
 	}
 }
 
@@ -480,7 +483,7 @@ static int __mempool_mem_mmap(
 		return -EBUSY;
 	}
 	if (!fsm_dp_mempool_hold(mempool)) {
-		FSM_DP_ERROR("%s: mempool not exist\n", __func__);
+		FSM_DP_ERROR("%s: mempool does not exist, mempool %p\n", __func__, mempool);
 		return -EAGAIN;
 	}
 

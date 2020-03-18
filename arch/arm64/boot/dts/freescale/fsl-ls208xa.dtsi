@@ -38,6 +38,22 @@
 		      /* DRAM space - 1, size : 2 GB DRAM */
 	};
 
+
+	reserved-memory {
+		#address-cells = <2>;
+		#size-cells = <2>;
+		ranges;
+
+		linux,cma {
+			compatible = "shared-dma-pool";
+			alloc-ranges = <0x0 0x00000000 0x0 0xffffffff>;
+			reusable;
+			alignment = <0x0 0x400000>;
+			size = <0x0 0x8000000>;
+			linux,cma-default;
+		};
+	};
+
 	sysclk: sysclk {
 		compatible = "fixed-clock";
 		#clock-cells = <0>;
@@ -521,7 +537,7 @@
 		};
 
 		/* TODO: WRIOP (CCSR?) */
-		emdio1: mdio@8B96000 { /* WRIOP0: 0x8B8_0000,
+		emdio1: mdio@8b96000 { /* WRIOP0: 0x8B8_0000,
 					  * E-MDIO1: 0x1_6000
 					  */
 			compatible = "fsl,fman-memac-mdio";
@@ -534,7 +550,7 @@
 			#size-cells = <0>;
 		};
 
-		emdio2: mdio@8B97000 { /* WRIOP0: 0x8B8_0000,
+		emdio2: mdio@8b97000 { /* WRIOP0: 0x8B8_0000,
 					  * E-MDIO2: 0x1_7000
 					  */
 			compatible = "fsl,fman-memac-mdio";
@@ -671,16 +687,19 @@
 			#size-cells = <2>;
 			device_type = "pci";
 			dma-coherent;
+			num-lanes = <8>;
 			bus-range = <0x0 0xff>;
 			msi-parent = <&its>;
-			iommu-map = <0 &smmu 0 1>;	/* This is fixed-up by u-boot */
+			msi-map = <0x100 &its 0 1>;
+			msi-map-mask = <0xffffffff>;
+			iommu-map = <0 &smmu 0 1>,
+			<0x100 &smmu 1 1>;
 			#interrupt-cells = <1>;
 			interrupt-map-mask = <0 0 0 7>;
 			interrupt-map = <0000 0 0 1 &gic 0 0 0 119 4>,
 					<0000 0 0 2 &gic 0 0 0 120 4>,
 					<0000 0 0 3 &gic 0 0 0 121 4>,
 					<0000 0 0 4 &gic 0 0 0 122 4>;
-			status = "disabled";
 		};
 
 		pcie4: pcie@3700000 {
@@ -740,7 +759,8 @@
 			compatible = "snps,dwc3";
 			reg = <0x0 0x3110000 0x0 0x10000>;
 			interrupts = <0 81 0x4>; /* Level high type */
-			dr_mode = "host";
+			dr_mode = "peripheral";
+			maximum-speed = "super-speed";
 			snps,quirk-frame-length-adjustment = <0x20>;
 			snps,dis_rxdet_inp3_quirk;
 			snps,incr-burst-type-adjustment = <1>, <4>, <8>, <16>;
@@ -782,11 +802,32 @@
 		little-endian;
 	};
 
+	pps {
+		gpios = <&gpio3 18 0>;
+		assert-falling-edge;
+		compatible = "pps-gpio";
+		status = "okay";
+	};
+
+	tti {
+		gpios = <&gpio3 17 0>;
+		assert-falling-edge;
+		compatible = "tti-gpio";
+		status = "okay";
+	};
+
 	firmware {
 		optee {
 			compatible = "linaro,optee-tz";
 			method = "smc";
 		};
+	};
+
+	qcom,fsm-dp {
+		compatible = "qcom,fsm-dp";
+		qcom,ul-bufs = <16384 4096>;
+		qcom,rx-queue-size = <1024 1024 1024 1024>;
+		dma-coherent;
 	};
 };
 

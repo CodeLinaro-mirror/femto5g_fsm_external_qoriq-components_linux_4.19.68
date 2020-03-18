@@ -74,8 +74,10 @@ static inline void console_silent(void)
 
 static inline void console_verbose(void)
 {
+/*
 	if (console_loglevel)
 		console_loglevel = CONSOLE_LOGLEVEL_MOTORMOUTH;
+*/
 }
 
 /* strlen("ratelimit") + 1 */

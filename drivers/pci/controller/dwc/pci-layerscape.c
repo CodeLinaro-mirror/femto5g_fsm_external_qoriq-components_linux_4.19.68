@@ -298,6 +298,17 @@ static int __init ls_add_pcie_port(struct ls_pcie *pcie)
 	return 0;
 }
 
+static void __iomem *dw_pci_space;
+static struct device *dw_pcie_dev;
+static bool dw_can_force3;
+static u32 dw_svr;
+#define SYSTEM_VERSION_REG      0xA4
+#define NXP_BOARD_INFO          0x1E00000
+#define NXP_BOARD_INFO_SIZE     0x100
+#define NXP_LX_BOARD            0x87360000
+
+#define NXP_PCIE1_ADDR		0x3600000
+
 static int __init ls_pcie_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
@@ -328,6 +339,21 @@ static int __init ls_pcie_probe(struct platform_device *pdev)
 
 	pcie->lut = pci->dbi_base + pcie->drvdata->lut_offset;
 
+	if (dbi_base->start == NXP_PCIE1_ADDR) {
+		void __iomem *nxp_board_cntrl;
+
+		dw_pci_space = pci->dbi_base;
+		dw_pcie_dev = dev;
+		nxp_board_cntrl = devm_ioremap_nocache(dw_pcie_dev,
+											   NXP_BOARD_INFO,
+											   NXP_BOARD_INFO_SIZE);
+		dw_svr = readl(nxp_board_cntrl +  SYSTEM_VERSION_REG);
+		if ((dw_svr & 0xffff0000) == NXP_LX_BOARD)
+			dw_can_force3 = true;
+		pr_info("%s: NXP board %x, dbi_base  %p can_force3 %d\n",
+				__func__,  dw_svr, dw_pci_space, dw_can_force3);
+		devm_iounmap(dw_pcie_dev, nxp_board_cntrl);
+	}
 	if (!ls_pcie_is_bridge(pcie))
 		return -ENODEV;
 
@@ -339,6 +365,132 @@ static int __init ls_pcie_probe(struct platform_device *pdev)
 
 	return 0;
 }
+
+#include <linux/i2c.h>
+#include <linux/i2c-dev.h>
+
+static bool lx_pcie_reset_force3(void)
+{
+#define NXP_LX_PCIE_CPLD_SLAVE_ADDR 0x66
+#define NXP_LX_PCIE_FORCE_3_REG 0x45
+
+#define PEX_PEXLUT_LTSSM   0xc07fc
+#define PEX_PF0_PME_MES_DR 0xc0020
+
+#define LTSSM_LINK_UP      0x11
+#define LDD_AND_LUD_BITS   0x280
+
+	u32 val;
+	struct i2c_msg lx_cpld_reset_r_msg[2];
+	struct i2c_msg lx_cpld_reset_w_msg;
+	unsigned char reset_byte;
+	unsigned char reset_reg = NXP_LX_PCIE_FORCE_3_REG;
+	unsigned char buf[2];
+	struct i2c_adapter *i2c_a;
+	int ret;
+
+	if (!dw_can_force3) {
+		pr_err("The current NXP board %x does not support life PCIe reset\n", dw_svr);
+		return false;
+	}
+	lx_cpld_reset_r_msg[0].addr = NXP_LX_PCIE_CPLD_SLAVE_ADDR;
+	lx_cpld_reset_r_msg[0].flags = 0;
+	lx_cpld_reset_r_msg[0].len = sizeof(reset_reg);
+	lx_cpld_reset_r_msg[0].buf = &reset_reg;
+	lx_cpld_reset_r_msg[1].addr = NXP_LX_PCIE_CPLD_SLAVE_ADDR;
+	lx_cpld_reset_r_msg[1].flags = I2C_M_RD;
+	lx_cpld_reset_r_msg[1].len = sizeof(reset_byte);
+	lx_cpld_reset_r_msg[1].buf = &reset_byte;
+
+	lx_cpld_reset_w_msg.addr = NXP_LX_PCIE_CPLD_SLAVE_ADDR;
+	lx_cpld_reset_w_msg.flags = 0;
+	lx_cpld_reset_w_msg.len = 2;
+	lx_cpld_reset_w_msg.buf = buf;
+	buf[0] = reset_reg;
+	i2c_a = i2c_get_adapter(0);
+	if (!i2c_a) {
+		pr_err("%s: can not get i2c-0 adaptor\n", __func__);
+		return false;
+	}
+
+	pr_info("%s: ls_pcie_reset_force3\n", __func__);
+
+	val = readl(dw_pci_space + PEX_PEXLUT_LTSSM);
+	pr_info("%s: read PEX_PEXLUT_LTSSM %x\n", __func__, val);
+
+	val = readl(dw_pci_space + PEX_PF0_PME_MES_DR);
+	pr_info("%s: read PEX_PF0_PME_MES_DR %x\n", __func__, val);
+
+	writel(val, dw_pci_space + PEX_PF0_PME_MES_DR);
+	val = readl(dw_pci_space + PEX_PF0_PME_MES_DR);
+	pr_info("%s: after write PEX_PF0_PME_MES_DR %x\n", __func__, val);
+
+	/* i2c to toggle force 3 reg */
+	ret = i2c_transfer(i2c_a, lx_cpld_reset_r_msg, 2);
+	if (ret < 0) {
+		pr_err("%s: i2c_transfer read error ret %d\n", __func__, ret);
+		return false;
+	}
+	pr_info("%s: read force3 reg val %x\n", __func__, reset_byte);
+
+	buf[1] = 0x80;
+	ret = i2c_transfer(i2c_a, &lx_cpld_reset_w_msg, 1);
+	if (ret < 0) {
+		pr_err("%s: i2c_transfer write error ret %d\n", __func__, ret);
+		return false;
+	}
+	pr_info("%s: write force3 reg with 0x80\n", __func__);
+	udelay(10);
+
+	ret = i2c_transfer(i2c_a, lx_cpld_reset_r_msg, 2);
+	if (ret < 0) {
+		pr_err("%s: i2c_transfer read error ret %d\n", __func__, ret);
+		return false;
+	}
+	pr_info("%s: read force3 reg val %x\n", __func__, reset_byte);
+	udelay(10);
+
+	val = readl(dw_pci_space + PEX_PF0_PME_MES_DR);
+	pr_info("%s: read PEX_PF0_PME_MES_DR %x\n", __func__, val);
+
+	val = readl(dw_pci_space + PEX_PEXLUT_LTSSM);
+	pr_info("%s: read PEX_PEXLUT_LTSSM %x\n", __func__, val);
+	udelay(10);
+
+	/* i2c to toggle force 3 reg */
+	buf[1] = 0x0;
+	ret = i2c_transfer(i2c_a, &lx_cpld_reset_w_msg, 1);
+	if (ret < 0) {
+		pr_err("%s: i2c_transfer write error ret %d\n", __func__, ret);
+		return false;
+	}
+	pr_info("%s: write force3 reg with 0x0\n",  __func__);
+	udelay(10);
+	ret = i2c_transfer(i2c_a, lx_cpld_reset_r_msg, 2);
+	if (ret < 0) {
+		pr_err("%s: i2c_transfer read error ret %d\n", __func__, ret);
+		return false;
+	}
+	pr_info("%s: read force3 reg val %x\n", __func__, reset_byte);
+	udelay(1000);
+
+	val = readl(dw_pci_space + PEX_PEXLUT_LTSSM);
+	pr_info("%s: read PEX_PEXLUT_LTSSM %x\n", __func__, val);
+
+	val = readl(dw_pci_space + PEX_PF0_PME_MES_DR);
+	pr_info("%s: read PEX_PF0_PME_MES_DR %x\n", __func__, val);
+	return true;
+}
+
+typedef bool (*pcie_reset_force_func)(void);
+pcie_reset_force_func get_pcie_reset_force_func(void)
+{
+	if (dw_can_force3)
+		return  lx_pcie_reset_force3;
+	else
+		return NULL;
+}
+EXPORT_SYMBOL(get_pcie_reset_force_func);
 
 static struct platform_driver ls_pcie_driver = {
 	.driver = {

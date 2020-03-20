@@ -40,6 +40,56 @@ static const struct firmware_info firmware_table[] = {
 static int debug_mode;
 module_param_named(debug_mode, debug_mode, int, 0644);
 
+struct pci_saved_state *pci_saved_state;
+int mhi_arch_link_suspend(struct mhi_controller *mhi_cntrl)
+{
+	struct mhi_dev *mhi_dev = mhi_controller_get_devdata(mhi_cntrl);
+	struct pci_dev *pci_dev = mhi_dev->pci_dev;
+	int ret = 0;
+
+	pci_clear_master(pci_dev);
+	ret = pci_save_state(mhi_dev->pci_dev);
+	if (ret) {
+		MHI_ERR("Failed with pci_save_state, ret:%d\n", ret);
+		goto exit_suspend;
+	}
+	pci_saved_state = pci_store_saved_state(pci_dev);
+	pci_disable_device(pci_dev);
+	pci_set_power_state(pci_dev, PCI_D3hot);
+exit_suspend:
+	MHI_LOG("Exited with ret:%d\n", ret);
+
+	return 0;
+}
+
+int mhi_arch_link_resume(struct mhi_controller *mhi_cntrl)
+{
+	struct mhi_dev *mhi_dev = mhi_controller_get_devdata(mhi_cntrl);
+	struct pci_dev *pci_dev = mhi_dev->pci_dev;
+	int ret;
+
+	ret = pci_set_power_state(pci_dev, PCI_D0);
+	if (ret) {
+		MHI_ERR("Failed to set PCI_D0 state, ret:%d\n", ret);
+		return ret;
+	}
+
+	ret = pci_enable_device(pci_dev);
+	if (ret) {
+		MHI_ERR("Failed to enable device, ret:%d\n", ret);
+		return ret;
+	}
+
+	ret = pci_load_and_free_saved_state(pci_dev, &pci_saved_state);
+	if (ret)
+		MHI_LOG("Failed to load saved cfg state\n");
+
+	pci_restore_state(pci_dev);
+	pci_set_master(pci_dev);
+	return 0;
+}
+
+
 void mhi_deinit_pci_dev(struct mhi_controller *mhi_cntrl)
 {
 	struct mhi_dev *mhi_dev = mhi_controller_get_devdata(mhi_cntrl);

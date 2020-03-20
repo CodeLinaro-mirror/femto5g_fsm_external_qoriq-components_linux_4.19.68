@@ -671,7 +671,7 @@ static void fsm_dp_alloc_work(struct work_struct *work)
 	} while (ret == -ENOMEM && retry);
 }
 
-static int __init fsm_dp_probe(struct platform_device *pdev)
+static int fsm_dp_probe(struct platform_device *pdev)
 {
 	struct fsm_dp_drv *pdrv;
 	int ret;
@@ -721,7 +721,7 @@ cleanup:
 	return ret;
 }
 
-static int __exit fsm_dp_remove(struct platform_device *pdev)
+static int fsm_dp_remove(struct platform_device *pdev)
 {
 	struct fsm_dp_drv *pdrv = platform_get_drvdata(pdev);
 

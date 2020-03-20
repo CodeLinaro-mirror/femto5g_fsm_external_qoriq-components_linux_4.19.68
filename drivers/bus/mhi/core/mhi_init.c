@@ -999,6 +999,7 @@ static int of_parse_dt(struct mhi_controller *mhi_cntrl,
 {
 	int ret;
 	struct mhi_timesync *mhi_tsync;
+	u32  pcie_link_speed;
 
 	/* parse MHI channel configuration */
 	ret = of_parse_ch_cfg(mhi_cntrl, of_node);
@@ -1042,6 +1043,18 @@ static int of_parse_dt(struct mhi_controller *mhi_cntrl,
 				   (u32 *)&mhi_cntrl->buffer_len);
 	if (ret)
 		mhi_cntrl->buffer_len = MHI_MAX_MTU;
+
+	ret = of_property_read_u32(of_node, "mhi,timeout",
+				   &mhi_cntrl->timeout_ms);
+	if (ret)
+		mhi_cntrl->timeout_ms = MHI_TIMEOUT_MS;
+
+	ret = of_property_read_u32(of_node, "mhi,pcie-link-speed",
+					&pcie_link_speed);
+	if (ret)
+		pcie_link_speed = 2;
+	if (pcie_link_speed == 3)
+		mhi_cntrl->force_gen3 = true;
 
 	return 0;
 

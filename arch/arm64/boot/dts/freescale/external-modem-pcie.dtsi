@@ -860,6 +860,8 @@
 		mhi,max-channels = <106>;
 		mhi,timeout = <2000>;
 
+		mhi,pcie-link-speed = <0x3>;
+
 		#address-cells = <1>;
 		#size-cells = <0>;
 

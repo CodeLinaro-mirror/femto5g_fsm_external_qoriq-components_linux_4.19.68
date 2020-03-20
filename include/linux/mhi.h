@@ -301,6 +301,7 @@ struct mhi_controller {
 	struct dentry *dentry;
 	struct dentry *parent;
 	bool mhi_removed;
+	bool force_gen3;
 };
 
 /**

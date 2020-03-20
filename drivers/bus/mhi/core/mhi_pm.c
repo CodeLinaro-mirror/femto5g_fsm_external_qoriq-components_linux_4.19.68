@@ -22,6 +22,7 @@
 #include <linux/slab.h>
 #include <linux/wait.h>
 #include <linux/mhi.h>
+#include <linux/pci.h>
 #include "mhi_internal.h"
 
 /*
@@ -420,10 +421,17 @@ int mhi_pm_m3_transition(struct mhi_controller *mhi_cntrl)
 	return 0;
 }
 
+extern int mhi_arch_link_resume(struct mhi_controller *mhi_cntrl);
+extern int mhi_arch_link_suspend(struct mhi_controller *mhi_cntrl);
+typedef bool (*pcie_reset_force_func)(void);
+pcie_reset_force_func get_pcie_reset_force_func(void);
+
 static int mhi_pm_mission_mode_transition(struct mhi_controller *mhi_cntrl)
 {
 	int i;
 	struct mhi_event *mhi_event;
+	int ret;
+	bool (*force_pcie_reset)(void);
 
 	MHI_LOG("Processing Mission Mode Transition\n");
 
@@ -469,6 +477,29 @@ static int mhi_pm_mission_mode_transition(struct mhi_controller *mhi_cntrl)
 	if (mhi_cntrl->time_sync)
 		mhi_init_timesync(mhi_cntrl);
 
+	/* force PCIe reset to bring PCIe EP to Gen 3 if PCIe controller supports it */
+	force_pcie_reset = get_pcie_reset_force_func();
+	if (!mhi_cntrl->force_gen3 || force_pcie_reset == NULL)
+		goto create_device;
+	ret = mhi_pm_suspend(mhi_cntrl);
+	if (ret)
+		pr_err("mhi_pm_suspend ret %d\n", ret);
+	mhi_arch_link_suspend(mhi_cntrl);
+	mdelay(100);
+
+	if (!((*force_pcie_reset)()))
+		pr_err("can not force PCIe reset\n");
+	mdelay(100);
+
+	mhi_arch_link_resume(mhi_cntrl);
+	udelay(10);
+	if (!ret) {
+		ret = mhi_pm_resume(mhi_cntrl);
+		if (ret)
+			pr_err("mhi_pm_resume error ret %d\n", ret);
+	}
+
+create_device:
 	MHI_LOG("Adding new devices\n");
 
 	/* add supported devices */
@@ -916,6 +947,8 @@ int mhi_pm_suspend(struct mhi_controller *mhi_cntrl)
 		return -EBUSY;
 	}
 
+	udelay(1000);   /* a delay of such is necessary */
+
 	/* exit MHI out of M2 state */
 	read_lock_bh(&mhi_cntrl->pm_lock);
 	mhi_cntrl->wake_get(mhi_cntrl, false);
@@ -1012,6 +1045,8 @@ int mhi_pm_resume(struct mhi_controller *mhi_cntrl)
 			mhi_notify(itr->mhi_dev, MHI_CB_LPM_EXIT);
 		mutex_unlock(&itr->mutex);
 	}
+
+	udelay(1000);
 
 	write_lock_irq(&mhi_cntrl->pm_lock);
 	cur_state = mhi_tryset_pm_state(mhi_cntrl, MHI_PM_M3_EXIT);

@@ -18,16 +18,30 @@
 
 struct fsm_dp_drv;
 
+#define MAX_FSM_DP_MEMPOOL_SIZE (1024 * 1024 * 64)
+#define FSM_DP_MEMPOOL_CLUSTER_SIZE (1024 * 256)
+#define FSM_DP_MEMPOOL_CLUSTER_SHIFT 18
+#define FSM_DP_MEMPOOL_CLUSTER_MASK (FSM_DP_MEMPOOL_CLUSTER_SIZE - 1)
+#define MAX_FSM_DP_MEMPOOL_CLUSTER \
+	(MAX_FSM_DP_MEMPOOL_SIZE / FSM_DP_MEMPOOL_CLUSTER_SIZE)
+
+
 struct fsm_dp_mem_loc {
-	void *base;		/* virtual address */
-	void *page_base;	/* page aligned base address */
-	unsigned int page_off;	/* offset to the page */
 	size_t size;		/* size of memory chunk */
-	dma_addr_t addr;	/* physical address */
+	void *base;		/* virtual address of first cluster.
+				 *  for ring with one cluster only
+				 */
 	unsigned int cookie;	/* mmap cookie */
-	bool dma_mapped;
-	dma_addr_t dma_addr;	/* dma addr */
+	struct page *page[MAX_FSM_DP_MEMPOOL_CLUSTER];
+	unsigned int last_cl_order;
+	unsigned int num_cluster; /* number of cluster, 1 for ring */
+	char *cluster_kernel_addr[MAX_FSM_DP_MEMPOOL_CLUSTER];
+
+	/* for  FSM_DP_MMAP_TYPE_MEM */
+	dma_addr_t cluster_dma_addr[MAX_FSM_DP_MEMPOOL_CLUSTER];
 	enum dma_data_direction direction;
+	bool dma_mapped;
+	unsigned int buf_per_cluster;
 };
 
 struct fsm_dp_mem {
@@ -91,7 +105,6 @@ struct fsm_dp_mempool {
 	char *dummy_buf;
 };
 
-
 struct fsm_dp_mempool *fsm_dp_mempool_alloc(
 	struct fsm_dp_drv *pdrv,
 	enum fsm_dp_mem_type type,
@@ -106,7 +119,8 @@ int fsm_dp_mempool_get_cfg(
 	struct fsm_dp_mempool_cfg *cfg);
 
 int fsm_dp_mempool_put_buf(struct fsm_dp_mempool *mempool, void *vaddr);
-void *fsm_dp_mempool_get_buf(struct fsm_dp_mempool *mempool);
+void *fsm_dp_mempool_get_buf(struct fsm_dp_mempool *mempool,
+		unsigned int *cluster, unsigned int *c_offset);
 
 static inline bool fsm_dp_mempool_hold(struct fsm_dp_mempool *mempool)
 {
@@ -152,7 +166,8 @@ int fsm_dp_ring_get_cfg(struct fsm_dp_ring *ring, struct fsm_dp_ring_cfg *cfg);
 struct fsm_dp_mempool *fsm_dp_find_mempool(
 	struct fsm_dp_drv *drv,
 	void *addr,
-	bool tx);
+	bool tx,
+	unsigned int *cluster);
 
 int fsm_dp_mempool_dma_map(
 	struct fsm_dp_drv *pdrv,
@@ -209,15 +224,17 @@ static __always_inline bool vaddr_in_vma_range(
 				    vma);
 }
 
+/* Find offset, this function is used with a memory ring type */
 static __always_inline unsigned long vaddr_offset(void *addr, void *base)
 {
 	return (unsigned long)addr - (unsigned long)base;
 }
 
+/* Find mmap size */
 static __always_inline unsigned long fsm_dp_mem_loc_mmap_size(
 	struct fsm_dp_mem_loc *loc)
 {
-	return (loc->size + loc->page_off);
+	return loc->size;
 }
 
 static inline unsigned int calc_ring_size(unsigned int elements)
@@ -244,6 +261,62 @@ static inline void fsm_dp_set_buf_state(void *ptr, enum fsm_dp_buf_state state)
 static inline uint32_t fsm_dp_buf_true_size(struct fsm_dp_mem *mem)
 {
 	return (mem->buf_sz + mem->buf_overhead_sz);
+}
+
+static inline void *fsm_dp_mem_rec_addr(struct fsm_dp_mem *mem,
+					unsigned int rec)
+{
+	unsigned int cluster;
+	unsigned int offset;
+
+	if (rec >= mem->buf_cnt) {
+		pr_err("%s: record %d exceed %d\n",
+			__func__, rec,  mem->buf_cnt);
+		return NULL;
+	}
+	cluster = rec / mem->loc.buf_per_cluster;
+	offset = (rec % mem->loc.buf_per_cluster) * fsm_dp_buf_true_size(mem);
+	return (void *) mem->loc.cluster_kernel_addr[cluster] + offset;
+}
+
+static inline long fsm_dp_mem_rec_offset(struct fsm_dp_mem *mem,
+					unsigned int rec)
+{
+	unsigned int cluster;
+	unsigned int offset;
+
+	if (rec >= mem->buf_cnt) {
+		pr_err("%s: record %d exceed %d\n",
+			__func__, rec,  mem->buf_cnt);
+		return -EINVAL;
+	}
+	cluster = rec / mem->loc.buf_per_cluster;
+	offset = (rec % mem->loc.buf_per_cluster) * fsm_dp_buf_true_size(mem);
+	return cluster * FSM_DP_MEMPOOL_CLUSTER_SIZE + offset;
+}
+
+static inline void *fsm_dp_mem_offset_addr(struct fsm_dp_mem *mem,
+	unsigned long offset, unsigned int *cluster, unsigned int *c_offset)
+{
+	if (offset >= mem->loc.size) {
+		pr_err("%s: offset 0x%lx exceed 0x%lx\n",
+				__func__, offset,  mem->loc.size);
+		return NULL;
+	}
+	*cluster = offset >>  FSM_DP_MEMPOOL_CLUSTER_SHIFT;
+	*c_offset = offset & FSM_DP_MEMPOOL_CLUSTER_MASK;
+	return (void *) (mem->loc.cluster_kernel_addr[*cluster] + *c_offset);
+}
+
+static inline unsigned long fsm_dp_get_mem_offset(void *addr,
+	struct fsm_dp_mem_loc *loc, unsigned int cl)
+{
+
+	unsigned long offset;
+
+	offset = (char *) addr - loc->cluster_kernel_addr[cl];
+	offset += cl * FSM_DP_MEMPOOL_CLUSTER_SIZE;
+	return offset;
 }
 
 #endif /* __FSM_DP_MEM_H__ */

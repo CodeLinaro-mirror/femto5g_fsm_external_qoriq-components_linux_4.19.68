@@ -211,4 +211,6 @@ int fsm_dp_tx(
 
 void fsm_dp_rx(struct fsm_dp_drv *pdrv, void *data, unsigned int length);
 
+void fsm_dp_hex_dump(unsigned char *buf, unsigned int len);
+
 #endif /* __FSM_DP__ */

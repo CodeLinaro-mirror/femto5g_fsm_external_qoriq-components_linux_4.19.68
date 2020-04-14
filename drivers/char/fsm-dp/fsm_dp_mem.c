@@ -27,63 +27,104 @@ static inline struct fsm_dp_mempool *fsm_dp_mem_to_mempool(
 
 static inline void fsm_dp_mem_loc_set(
 	struct fsm_dp_mem_loc *loc,
-	void *base,
 	size_t size,
-	dma_addr_t addr,
 	unsigned int mmap_cookie)
 {
-	loc->base = base;
+	loc->base = loc->cluster_kernel_addr[0];
 	loc->size = size;
-	loc->addr = addr;
-	loc->page_base = (void *)((unsigned long)base & PAGE_MASK);
-	loc->page_off = (unsigned int)((unsigned long)base & (PAGE_SIZE - 1));
 	loc->cookie = mmap_cookie;
 	loc->dma_mapped = false;
 }
 
-static inline int __alloc(
+static inline int __alloc_ring(
 	size_t size,
 	unsigned int mmap_cookie,
 	struct fsm_dp_mem_loc *loc)
 {
-	void *p = kzalloc(size, GFP_KERNEL);
-	dma_addr_t addr;
+	unsigned int order;
+	struct page *page;
 
-	if (p) {
-		addr = virt_to_phys(p);
-		fsm_dp_mem_loc_set(loc, p, size, addr, mmap_cookie);
+	order = get_order(size);
+	if (order > get_order(FSM_DP_MEMPOOL_CLUSTER_SIZE)) {
+		FSM_DP_ERROR("%s: failed to allocate memory. Too Big %ld\n",
+				__func__, size);
+		return -ENOMEM;
+	}
+	page = alloc_pages(GFP_KERNEL, order);
+	loc->last_cl_order = order;
+	loc->num_cluster = 1;
+	if (page) {
+		loc->page[0] = page;
+		loc->cluster_kernel_addr[0] = page_address(page);
+		fsm_dp_mem_loc_set(loc, size, mmap_cookie);
 		return 0;
 	}
 	return -ENOMEM;
 }
 
-static inline void __free(struct fsm_dp_mem_loc *loc)
+static inline void __free_ring(struct fsm_dp_mem_loc *loc)
 {
-	if (loc && loc->base && loc->size) {
-		kfree(loc->base);
+	if (loc && loc->page[0]) {
+		__free_pages(loc->page[0], loc->last_cl_order);
 		memset(loc, 0, sizeof(*loc));
 	}
 }
 
-static inline int __dma_alloc(struct device *dev,
-			      size_t size,
+static inline int __buf_mem_alloc(size_t size,
 			      unsigned int mmap_cookie,
 			      struct fsm_dp_mem_loc *loc)
 {
-	dma_addr_t dma_hdl;
-	void *p = dma_alloc_coherent(dev, size, &dma_hdl, GFP_KERNEL);
+	unsigned int order;
+	struct page *page;
+	int i;
+	unsigned long rem = size;
+	unsigned long len;
 
-	if (p) {
-		fsm_dp_mem_loc_set(loc, p, size, dma_hdl, mmap_cookie);
-		return 0;
+	for (i = 0; i < loc->num_cluster; i++) {
+		if (i == loc->num_cluster - 1)
+			len = rem;
+		else
+			len = FSM_DP_MEMPOOL_CLUSTER_SIZE;
+		order = get_order(len);
+		if (i == loc->num_cluster - 1)
+			loc->last_cl_order = order;
+		page = alloc_pages(GFP_KERNEL, order);
+		if (!page)
+			goto error;
+		loc->page[i] = page;
+		loc->cluster_kernel_addr[i] = page_address(page);
+		rem -= len;
 	}
+	fsm_dp_mem_loc_set(loc, size, mmap_cookie);
+	return 0;
+error:
+	for (i = 0; i < loc->num_cluster; i++) {
+		if (loc->page[i]) {
+			if (i == loc->num_cluster - 1)
+				order = loc->last_cl_order;
+			else
+				order = get_order(FSM_DP_MEMPOOL_CLUSTER_SIZE);
+			__free_pages(loc->page[i], order);
+			loc->page[i] = NULL;
+		}
+	}
+	loc->num_cluster = 0;
 	return -ENOMEM;
 }
 
-static inline void __dma_free(struct device *dev, struct fsm_dp_mem_loc *loc)
+static inline void __buf_mem_free(struct fsm_dp_mem_loc *loc)
 {
-	if (loc && loc->base && loc->size) {
-		dma_free_coherent(dev, loc->size, loc->base, loc->addr);
+	int i;
+	unsigned int order = get_order(FSM_DP_MEMPOOL_CLUSTER_SIZE);
+
+	if (loc) {
+		for (i = 0; i < loc->num_cluster; i++) {
+			if (loc->page[i]) {
+				if (i == loc->num_cluster - 1)
+					order = loc->last_cl_order;
+				__free_pages(loc->page[i], order);
+			}
+		}
 		memset(loc, 0, sizeof(*loc));
 	}
 }
@@ -100,9 +141,9 @@ int fsm_dp_ring_init(
 
 	/* cons and prod index space, aligned to cache line */
 	allocsz += 4 * cache_line_size();
-	allocsz += cache_line_size() - 1;
+	allocsz = ALIGN(allocsz, cache_line_size());
 
-	if (__alloc(allocsz, mmap_cookie, &ring->loc)) {
+	if (__alloc_ring(allocsz, mmap_cookie, &ring->loc)) {
 		FSM_DP_ERROR("%s: failed to allocate ring memory\n", __func__);
 		return -ENOMEM;
 	}
@@ -118,17 +159,18 @@ int fsm_dp_ring_init(
 	ring->cons_tail = (fsm_dp_ring_index_t *)aligned_ptr;
 	aligned_ptr += cache_line_size();
 	ring->element = elem_p = (fsm_dp_ring_element_t *)aligned_ptr;
-
 	for (i = 0; i < ringsz; i++, elem_p++)
 		elem_p->element_ctrl = 1; /* not valid */
 	ring->size = ringsz;
+	*ring->prod_head = *ring->prod_tail = *ring->cons_head =
+						*ring->cons_tail = 0;
 	return 0;
 }
 
 void fsm_dp_ring_cleanup(struct fsm_dp_ring *ring)
 {
 	if (ring) {
-		__free(&ring->loc);
+		__free_ring(&ring->loc);
 		memset(ring, 0, sizeof(*ring));
 	}
 }
@@ -137,22 +179,20 @@ int fsm_dp_ring_get_cfg(struct fsm_dp_ring *ring, struct fsm_dp_ring_cfg *cfg)
 {
 	if (unlikely(ring == NULL || cfg == NULL))
 		return -EINVAL;
-
 	cfg->mmap.length = ring->loc.size;
-	cfg->mmap.offset = ring->loc.page_off;
 	cfg->mmap.cookie = ring->loc.cookie;
 
 	cfg->size = ring->size;
-	cfg->prod_head_off = ring->loc.page_off +
-		vaddr_offset((void *)ring->prod_head, ring->loc.base);
-	cfg->prod_tail_off = ring->loc.page_off +
-		vaddr_offset((void *)ring->prod_tail, ring->loc.base);
-	cfg->cons_head_off = ring->loc.page_off +
-		vaddr_offset((void *)ring->cons_head, ring->loc.base);
-	cfg->cons_tail_off = ring->loc.page_off +
-		vaddr_offset((void *)ring->cons_tail, ring->loc.base);
-	cfg->ringbuf_off = ring->loc.page_off +
-		vaddr_offset((void *)ring->element, ring->loc.base);
+	cfg->prod_head_off = vaddr_offset((void *)ring->prod_head,
+							ring->loc.base);
+	cfg->prod_tail_off = vaddr_offset((void *)ring->prod_tail,
+							ring->loc.base);
+	cfg->cons_head_off = vaddr_offset((void *)ring->cons_head,
+							ring->loc.base);
+	cfg->cons_tail_off = vaddr_offset((void *)ring->cons_tail,
+							ring->loc.base);
+	cfg->ringbuf_off = vaddr_offset((void *)ring->element,
+							ring->loc.base);
 	return 0;
 }
 
@@ -341,15 +381,33 @@ static int fsm_dp_mem_init(
 	unsigned int bufsz,
 	unsigned int cookie)
 {
-	struct fsm_dp_mempool *mempool = fsm_dp_mem_to_mempool(mem);
-	struct fsm_dp_drv *pdrv = mempool->drv;
+	unsigned int num_buf_cl; /* number of buffers per cluster */
+	unsigned int num_cl; /* number of clusters */
+	unsigned long size;
+	unsigned long rem_size = 0;
+	unsigned int rem_buf;
 
 	mem->buf_cnt = bufcnt;
-	mem->buf_sz = bufsz;
+	mem->buf_sz = ALIGN(bufsz, cache_line_size());
 	mem->buf_overhead_sz = FSM_DP_L1_CACHE_BYTES;
 
-	if (__dma_alloc(pdrv->dev, bufcnt * fsm_dp_buf_true_size(mem),
-			cookie, &mem->loc)) {
+	num_buf_cl = FSM_DP_MEMPOOL_CLUSTER_SIZE / fsm_dp_buf_true_size(mem);
+	num_cl = bufcnt / num_buf_cl;
+	size = num_cl * FSM_DP_MEMPOOL_CLUSTER_SIZE;
+	rem_buf = bufcnt % num_buf_cl;
+	if (rem_buf) {
+		num_cl++;
+		rem_size = fsm_dp_buf_true_size(mem) * rem_buf;
+	}
+	if (num_cl > MAX_FSM_DP_MEMPOOL_CLUSTER) {
+		FSM_DP_ERROR("%s: failed to allocate DMA memory. Too Big %d\n",
+				__func__, num_cl);
+		return -ENOMEM;
+	}
+	mem->loc.num_cluster = num_cl;
+	mem->loc.buf_per_cluster = num_buf_cl;
+	size += rem_size;
+	if (__buf_mem_alloc(size, cookie, &mem->loc)) {
 		FSM_DP_ERROR("%s: failed to allocate DMA memory\n", __func__);
 		return -ENOMEM;
 	}
@@ -360,12 +418,29 @@ static void fsm_dp_mem_cleanup(struct fsm_dp_mem *mem)
 {
 	struct fsm_dp_mempool *mempool = fsm_dp_mem_to_mempool(mem);
 	struct fsm_dp_drv *pdrv = mempool->drv;
+	int i;
+	unsigned int size;
 
-	if (mem->loc.dma_mapped)
-		dma_unmap_single(pdrv->mhi.mhi_dev->mhi_cntrl->dev,
-				mem->loc.dma_addr, mem->loc.size,
-				mem->loc.direction);
-	__dma_free(pdrv->dev, &mem->loc);
+	if (mem->loc.dma_mapped) {
+		size = mem->loc.size;
+		for (i = 0; i < mem->loc.num_cluster; i++) {
+			if (i ==  mem->loc.num_cluster - 1) {
+				dma_unmap_single(
+					pdrv->mhi.mhi_dev->mhi_cntrl->dev,
+					mem->loc.cluster_dma_addr[i],
+					size,
+					mem->loc.direction);
+			} else {
+				dma_unmap_single(
+					pdrv->mhi.mhi_dev->mhi_cntrl->dev,
+					mem->loc.cluster_dma_addr[i],
+					FSM_DP_MEMPOOL_CLUSTER_SIZE,
+					mem->loc.direction);
+				size -= FSM_DP_MEMPOOL_CLUSTER_SIZE;
+			}
+		}
+	}
+	__buf_mem_free(&mem->loc);
 	memset(mem, 0, sizeof(*mem));
 }
 
@@ -374,12 +449,14 @@ static int fsm_dp_mem_get_cfg(
 	struct fsm_dp_mem_cfg *cfg)
 {
 	cfg->mmap.length = mem->loc.size;
-	cfg->mmap.offset = mem->loc.page_off;
 	cfg->mmap.cookie = mem->loc.cookie;
 
 	cfg->buf_sz = mem->buf_sz;
 	cfg->buf_cnt = mem->buf_cnt;
 	cfg->buf_overhead_sz = FSM_DP_L1_CACHE_BYTES;
+	cfg->cluster_size = FSM_DP_MEMPOOL_CLUSTER_SIZE;
+	cfg->num_cluster = mem->loc.num_cluster;
+	cfg->buf_per_cluster = mem->loc.buf_per_cluster;
 	return 0;
 }
 
@@ -388,32 +465,45 @@ static void fsm_dp_mempool_init(struct fsm_dp_mempool *mempool)
 	struct fsm_dp_mem *mem = &mempool->mem;
 	struct fsm_dp_ring *ring = &mempool->ring;
 	fsm_dp_ring_element_data_t element_data;
-	int i;
+	int i, j;
 	struct fsm_dp_buf_cntrl *p;
+	unsigned int cl_buf_cnt;
+	unsigned int buf_index = 0;
+	char *cl_start;
 
 	switch (mempool->type) {
 	case FSM_DP_MEM_TYPE_DL_L1_DATA:
 	case FSM_DP_MEM_TYPE_DL_L1_CTL:
 	case FSM_DP_MEM_TYPE_DL_RF:
 	case FSM_DP_MEM_TYPE_UL:
-		element_data = mem->loc.page_off;
-		for (i = 0; i < mem->buf_cnt; i++) {
-			p = (struct fsm_dp_buf_cntrl *)
-				(mem->loc.page_base + element_data);
-			p->signature = FSM_DP_BUFFER_SIG;
-			p->fence = FSM_DP_BUFFER_FENCE_SIG;
-			p->state = FSM_DP_BUF_STATE_KERNEL_FREE;
-			if (mempool->type != FSM_DP_MEM_TYPE_UL)
-				p->xmit_status = FSM_DP_XMIT_OK;
-			ring->element[i].element_data =
-				element_data + mem->buf_overhead_sz;
-			ring->element[i].element_ctrl = 0; /* entry valid */
-			element_data += fsm_dp_buf_true_size(mem);
+		for (j = 0; j < mem->loc.num_cluster; j++) {
+			element_data = j * FSM_DP_MEMPOOL_CLUSTER_SIZE;
+			cl_start = mem->loc.cluster_kernel_addr[j];
+			if (j == mem->loc.num_cluster - 1)
+				cl_buf_cnt = mem->buf_cnt -
+					(mem->loc.buf_per_cluster * j);
+			else
+				cl_buf_cnt = mem->loc.buf_per_cluster;
+			for (i = 0; i < cl_buf_cnt; i++) {
+				p = (struct fsm_dp_buf_cntrl *) (cl_start +
+					(i * fsm_dp_buf_true_size(mem)));
+				p->signature = FSM_DP_BUFFER_SIG;
+				p->fence = FSM_DP_BUFFER_FENCE_SIG;
+				p->state = FSM_DP_BUF_STATE_KERNEL_FREE;
+				p->buf_index = buf_index;
+				if (mempool->type != FSM_DP_MEM_TYPE_UL)
+					p->xmit_status = FSM_DP_XMIT_OK;
+				/* pointing to start of user data */
+				ring->element[buf_index].element_data =
+					element_data + mem->buf_overhead_sz;
+				/* entry valid */
+				ring->element[buf_index].element_ctrl = 0;
+				element_data += fsm_dp_buf_true_size(mem);
+				buf_index++;
+			}
 		}
-		*ring->cons_head = 0;
-		*ring->cons_tail = 0;
-		*ring->prod_head = i - 1;
-		*ring->prod_tail = i - 1;
+		*ring->cons_head = *ring->cons_tail = 0;
+		*ring->prod_head = *ring->prod_tail = mem->buf_cnt - 1;
 		wmb();	/* Ensure all the data are written */
 		break;
 	default:
@@ -502,7 +592,6 @@ static void fsm_dp_mempool_release(struct fsm_dp_mempool *mempool)
 #define FSM_DP_MEMPOOL_RELEASE_SLEEP 20 /* 20 ms */
 void fsm_dp_mempool_release_no_delay(struct fsm_dp_mempool *mempool)
 {
-	struct fsm_dp_buf_cntrl *p;
 	unsigned int out_xmit, out_xmit1;
 
 	if (!mempool)
@@ -529,24 +618,47 @@ int fsm_dp_mempool_dma_map(
 {
 	enum dma_data_direction direction;
 	struct device *dev;	/* device for iommu ops */
+	int i, k;
+	unsigned int size;
+	struct fsm_dp_mem_loc *loc;
 
-	if (mpool->mem.loc.dma_mapped)
+	loc = &mpool->mem.loc;
+	if (loc->dma_mapped)
 		return 0;
 	dev = pdrv->mhi.mhi_dev->mhi_cntrl->dev;
 	if (type == FSM_DP_MEM_TYPE_UL)
-		direction = DMA_FROM_DEVICE;
+		direction = DMA_BIDIRECTIONAL; /* rx, tx for rx loopback */
 	else
 		direction = DMA_TO_DEVICE;
-	mpool->mem.loc.dma_addr =
-		dma_map_single(pdrv->mhi.mhi_dev->mhi_cntrl->dev,
-			mpool->mem.loc.base,
-			mpool->mem.loc.size,
-			direction);
-	if (dma_mapping_error(dev, mpool->mem.loc.dma_addr))
-		return -ENOMEM;
+	size = loc->size;
+	for (i = 0; i < loc->num_cluster; i++) {
+		if (i == loc->num_cluster - 1)
+			loc->cluster_dma_addr[i] =
+				dma_map_single(dev,
+					loc->cluster_kernel_addr[i],
+					size,
+					direction);
+		else {
+			loc->cluster_dma_addr[i] =
+				dma_map_single(dev,
+					loc->cluster_kernel_addr[i],
+					FSM_DP_MEMPOOL_CLUSTER_SIZE,
+					direction);
+			size -= FSM_DP_MEMPOOL_CLUSTER_SIZE;
+		}
+		if (dma_mapping_error(dev, loc->cluster_dma_addr[i]))
+			goto error;
+	}
 	mpool->mem.loc.dma_mapped = true;
 	mpool->mem.loc.direction = direction;
 	return 0;
+error:
+	for (k = 0; k < i - 1; k++) {
+		dma_unmap_single(dev, loc->cluster_dma_addr[k],
+			FSM_DP_MEMPOOL_CLUSTER_SIZE,
+			loc->direction);
+	}
+	return -ENOMEM;
 }
 
 struct fsm_dp_mempool *fsm_dp_mempool_alloc(
@@ -571,8 +683,9 @@ struct fsm_dp_mempool *fsm_dp_mempool_alloc(
 	mutex_lock(&pdrv->mempool_lock);
 	mempool = pdrv->mempool[type];
 	if (mempool) {
-		if (buf_sz > mempool->mem.buf_sz ||
-		    buf_cnt > mempool->mem.buf_cnt) {
+		if (type !=  FSM_DP_MEM_TYPE_UL &&
+			(buf_sz > mempool->mem.buf_sz ||
+				buf_cnt > mempool->mem.buf_cnt)) {
 			FSM_DP_ERROR(
 				"%s: can't use existing mempool, type=%u\n",
 				__func__, type);
@@ -623,52 +736,49 @@ int fsm_dp_mempool_get_cfg(
 	return 0;
 }
 
+/* For FSM_DP_MEM_TYPE_UL pool only */
 int fsm_dp_mempool_put_buf(struct fsm_dp_mempool *mempool, void *vaddr)
 {
 	struct fsm_dp_mem *mem;
 	unsigned long offset;
 	int ret;
-#ifdef FSM_DP_BUFFER_FENCING
 	struct fsm_dp_buf_cntrl *p;
-#endif
+	unsigned int buf_index;
+	unsigned int cluster;
 
 	if (unlikely(mempool == NULL || vaddr == NULL))
 		return -EINVAL;
 
 	mem = &mempool->mem;
-	if (!vaddr_in_range(vaddr, mem->loc.base, mem->loc.size)) {
-		mempool->stats.invalid_buf_put++;
-		FSM_DP_DEBUG("%s: address(%p) not in range\n", __func__, vaddr);
+	p = (vaddr - mem->buf_overhead_sz);
+	buf_index = p->buf_index;
+	if (buf_index >= mem->buf_cnt) {
+		FSM_DP_ERROR("%s: buf_index %d exceed %d\n", __func__,
+				buf_index, mem->buf_cnt);
 		return -EINVAL;
 	}
-
-	offset = vaddr_offset(vaddr, mem->loc.base);
-
-	/* align to buffer boundary */
-	offset -= offset % fsm_dp_buf_true_size(mem);
-
-	/* align to page boundary for mmap */
-	offset += mem->loc.page_off;
-
+	cluster = buf_index / mem->loc.buf_per_cluster;
+	offset = (cluster * FSM_DP_MEMPOOL_CLUSTER_SIZE) +
+			(buf_index % mem->loc.buf_per_cluster) *
+					fsm_dp_buf_true_size(mem);
 #ifdef FSM_DP_BUFFER_FENCING
-	p = (struct fsm_dp_buf_cntrl *) (mem->loc.page_base + offset);
 	if (p->signature != FSM_DP_BUFFER_SIG) {
 		mempool->stats.invalid_buf_put++;
-		FSM_DP_ERROR("%s: mempool %p type %d buffer at "
+		FSM_DP_ERROR("%s: mempool %llx type %d buffer at "
 			"offset %ld corrupted, sig %x, exp %x\n",
-			__func__, mempool, mempool->type,
+			__func__, (u64) mempool, mempool->type,
 			offset, p->signature, FSM_DP_BUFFER_SIG);
 		return -EINVAL;
 	}
 	if (p->fence != FSM_DP_BUFFER_FENCE_SIG) {
 		mempool->stats.invalid_buf_put++;
-		FSM_DP_ERROR("%s: mempool %p type %d buffer at "
+		FSM_DP_ERROR("%s: mempool %llx type %d buffer at "
 			"offset %ld corrupted, fence %x, exp %x\n",
-			__func__, mempool, mempool->type,
+			__func__, (u64) mempool, mempool->type,
 			offset, p->fence, FSM_DP_BUFFER_FENCE_SIG);
-		FSM_DP_ERROR("%s: vaddr %p  p %p\n",
-			__func__, vaddr, p);
-		return 0;
+		FSM_DP_ERROR("%s: vaddr %llx  p %llx\n",
+			__func__, (u64) vaddr, (u64) p);
+		return -EINVAL;
 	}
 	p->state = FSM_DP_BUF_STATE_KERNEL_FREE;
 #endif
@@ -683,12 +793,13 @@ int fsm_dp_mempool_put_buf(struct fsm_dp_mempool *mempool, void *vaddr)
 	return ret;
 }
 
-void *fsm_dp_mempool_get_buf(struct fsm_dp_mempool *mempool)
+/* For FSM_DP_MEM_TYPE_UL pool only */
+void *fsm_dp_mempool_get_buf(struct fsm_dp_mempool *mempool,
+				unsigned int *cluster,  unsigned int *c_offset)
 {
 	struct fsm_dp_mem *mem;
 	fsm_dp_ring_element_data_t val;
 	unsigned int flag;
-	unsigned long offset;
 	void *ptr;
 #ifdef FSM_DP_BUFFER_FENCING
 	struct fsm_dp_buf_cntrl *p;
@@ -703,30 +814,31 @@ void *fsm_dp_mempool_get_buf(struct fsm_dp_mempool *mempool)
 	}
 
 	mem = &mempool->mem;
-	ptr = (char *)mem->loc.page_base + val;
-	offset = vaddr_offset(ptr, mem->loc.base);
-	if ((offset - mem->buf_overhead_sz) % fsm_dp_buf_true_size(mem)) {
+	*cluster = val >> FSM_DP_MEMPOOL_CLUSTER_SHIFT;
+	*c_offset = val & FSM_DP_MEMPOOL_CLUSTER_MASK;
+	ptr = (char *)mempool->mem.loc.cluster_kernel_addr[*cluster] +
+								*c_offset;
+	if ((*c_offset - mem->buf_overhead_sz) % fsm_dp_buf_true_size(mem)) {
 		mempool->stats.invalid_buf_get++;
-		FSM_DP_ERROR("%s: get unaligned buffer "
-			"from ring, buf true size %d offset %ld\n",
-			__func__, fsm_dp_buf_true_size(mem), offset);
+		FSM_DP_ERROR("%s: get unaligned buffer from ring, buf true size %d offset %d\n",
+			__func__, fsm_dp_buf_true_size(mem), *c_offset);
 		return NULL;
 	}
 #ifdef FSM_DP_BUFFER_FENCING
 	p = ptr - mem->buf_overhead_sz;
 	if (p->signature !=  FSM_DP_BUFFER_SIG) {
 		mempool->stats.invalid_buf_get++;
-		FSM_DP_ERROR("%s: mempool type %ld buffer "
+		FSM_DP_ERROR("%s: mempool type %d buffer "
 			"at %d corrupted, %x, exp %x\n",
-			__func__, offset, mempool->type,
+			__func__, *c_offset, mempool->type,
 			p->signature, FSM_DP_BUFFER_SIG);
 		return NULL;
 	}
 	if (p->fence !=  FSM_DP_BUFFER_FENCE_SIG) {
 		mempool->stats.invalid_buf_get++;
-		FSM_DP_ERROR("%s: mempool type %ld "
+		FSM_DP_ERROR("%s: mempool type %d "
 			"buffer at %d corrupted, fence %x, exp %x\n",
-			__func__, offset, mempool->type,
+			__func__, *c_offset, mempool->type,
 			p->fence, FSM_DP_BUFFER_FENCE_SIG);
 		return NULL;
 	}
@@ -738,7 +850,8 @@ void *fsm_dp_mempool_get_buf(struct fsm_dp_mempool *mempool)
 struct fsm_dp_mempool *fsm_dp_find_mempool(
 	struct fsm_dp_drv *pdrv,
 	void *addr,
-	bool tx)
+	bool tx,
+	unsigned int *cluster)
 {
 	struct fsm_dp_mempool *mempool = NULL;
 	struct fsm_dp_mem *mem;
@@ -756,12 +869,33 @@ struct fsm_dp_mempool *fsm_dp_find_mempool(
 	}
 
 	for (; mem_type < mem_type_last; mem_type++) {
+		unsigned int clust;
+		unsigned int remainder;
+		unsigned int len;
+
 		mempool = pdrv->mempool[mem_type];
 		if (mempool) {
 			mem = &mempool->mem;
-			if (vaddr_in_range(addr, mem->loc.base, mem->loc.size))
-				return mempool;
+			remainder = mem->loc.size;
+			for (clust = 0; clust < mem->loc.num_cluster;
+							clust++) {
+				if (clust == mem->loc.num_cluster - 1)
+					len = remainder;
+				else
+					len = FSM_DP_MEMPOOL_CLUSTER_SIZE;
+				if (vaddr_in_range(
+					addr,
+					mem->loc.cluster_kernel_addr[clust],
+					len)) {
+					*cluster = clust;
+					return mempool;
+				}
+
+				remainder -= len;
+			}
 		}
 	}
 	return NULL;
 }
+
+

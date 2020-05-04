@@ -27,7 +27,7 @@
 
 #define QRTR_LOG_PAGE_CNT 4
 #define QRTR_INFO(ctx, x, ...)				\
-	pr_info(x, ##__VA_ARGS__)
+	pr_debug(x, ##__VA_ARGS__)
 
 #define QRTR_PROTO_VER_1 1
 #define QRTR_PROTO_VER_2 3

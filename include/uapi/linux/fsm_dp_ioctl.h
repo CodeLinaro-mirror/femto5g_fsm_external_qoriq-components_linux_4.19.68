@@ -72,6 +72,7 @@ enum fsm_dp_rx_type {
 	FSM_DP_RX_TYPE_RF,
 	FSM_DP_RX_TYPE_TA,
 	FSM_DP_RX_TYPE_LPBK,
+	FSM_DP_RX_TYPE_ORU,
 	FSM_DP_RX_TYPE_LAST,
 };
 
@@ -79,23 +80,44 @@ enum fsm_dp_msg_type {
 	FSM_DP_MSG_TYPE_L1		= 0,
 	FSM_DP_MSG_TYPE_RF		= 1,
 	FSM_DP_MSG_TYPE_TA		= 2,
+	FSM_DP_MSG_TYPE_ORU		= 3,
 	FSM_DP_MSG_TYPE_LPBK_REQ	= 0xFE,
 	FSM_DP_MSG_TYPE_LPBK_RSP	= 0xFF,
 };
 
+/* Note! when we add a new message type, change this macro */
+#define FSM_DP_NUM_MSG_TYPE (FSM_DP_MSG_TYPE_ORU + 3)
+
+
 struct fsm_dp_msghdr {
 	uint32_t version : 8;
 	uint32_t type : 8;
-	uint32_t unused : 8;
-	uint32_t reserved : 8;
+	uint32_t reserved : 15;
+	uint32_t aggr: 1 ; /* if set, fsm_dp_aggrhdr follows */
 	uint32_t length : 16;
-	uint16_t sequence : 16;
+	uint32_t sequence : 16;
 } __attribute__((packed));
 
 
 #define FSM_DP_BUFFER_FENCE_SIG 0xDEADFACE
 #define FSM_DP_BUFFER_SIG       0xDAC0FFEE
 #define FSM_DP_BUFFER_FENCING   1
+
+/*
+ * The corresponding aggr msg is starting at offset from aggr header of
+ * size bytes.
+ */
+struct fsm_dp_aggriob {
+	uint16_t offset;
+	uint16_t size;
+};
+
+/* fsm_dp_aggrhdr */
+struct fsm_dp_aggrhdr {
+	uint32_t reserved : 24;
+	uint32_t n_iobs: 8; /* number of fsm_dp_aggriov */
+	struct fsm_dp_aggriob iob[0]; /* nIovs fsm_dp_aggriov follows */
+} __attribute__((packed));
 
 /*
  * A buffer control is an area with size of
@@ -257,6 +279,7 @@ static inline const char *fsm_dp_rx_type_to_str(enum fsm_dp_rx_type type)
 	case FSM_DP_RX_TYPE_L1: return "L1";
 	case FSM_DP_RX_TYPE_RF: return "RF";
 	case FSM_DP_RX_TYPE_TA: return "TA";
+	case FSM_DP_RX_TYPE_ORU: return "ORU";
 	case FSM_DP_RX_TYPE_LPBK: return "LOOPBACK";
 	default: return "unknown";
 	}

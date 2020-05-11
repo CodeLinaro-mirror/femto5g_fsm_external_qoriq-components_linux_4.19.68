@@ -237,6 +237,9 @@ static int tx_loopback(
 	case FSM_DP_MSG_TYPE_TA:
 		dest = FSM_DP_RX_TYPE_TA;
 		break;
+	case FSM_DP_MSG_TYPE_ORU:
+		dest = FSM_DP_RX_TYPE_ORU;
+		break;
 	default:
 		break;
 	}
@@ -438,6 +441,9 @@ void fsm_dp_rx(struct fsm_dp_drv *pdrv, void *addr, unsigned int length)
 		break;
 	case FSM_DP_MSG_TYPE_TA:
 		rxq = &pdrv->rxq[FSM_DP_RX_TYPE_TA];
+		break;
+	case FSM_DP_MSG_TYPE_ORU:
+		rxq = &pdrv->rxq[FSM_DP_RX_TYPE_ORU];
 		break;
 	default:
 		FSM_DP_DEBUG("%s: unsupport msg type(%u)\n",

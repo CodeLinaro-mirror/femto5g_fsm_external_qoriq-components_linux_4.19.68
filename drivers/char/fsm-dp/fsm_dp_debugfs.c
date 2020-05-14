@@ -143,21 +143,16 @@ static int __fsm_dp_ring_config_dump(
 	struct seq_file *s,
 	struct fsm_dp_ring *ring)
 {
-
-	seq_puts(s, "MemoryAlloc:\n");
-	seq_printf(s, "         AllocAddr:     %p\n", ring->loc.base);
+	seq_printf(s, "Ring %llx MemoryAlloc:\n", (u64) ring);
+	seq_printf(s, "         AllocAddr:     %llx\n", (u64) ring->loc.base);
 	seq_printf(s, "         AllocSize:     0x%08lx\n", ring->loc.size);
-	seq_printf(s, "         BasePageAddr:  %p\n", ring->loc.page_base);
-	seq_printf(s, "         PageOffset:    0x%x\n", ring->loc.page_off);
-	seq_printf(s, "         DMAAddr:       0x%08lx\n",
-		   (unsigned long)ring->loc.addr);
 	seq_printf(s, "         MmapCookie:    0x%08x\n", ring->loc.cookie);
 	seq_printf(s, "Size:                   0x%x\n", ring->size);
-	seq_printf(s, "ProdHdr:                %p\n", ring->prod_head);
-	seq_printf(s, "ProdTail:               %p\n", ring->prod_tail);
-	seq_printf(s, "ConsHdr:                %p\n", ring->cons_head);
-	seq_printf(s, "ConsTail:               %p\n", ring->cons_tail);
-	seq_printf(s, "RingBuf:                %p\n", ring->element);
+	seq_printf(s, "ProdHdr:                %llx\n", (u64) ring->prod_head);
+	seq_printf(s, "ProdTail:               %llx\n", (u64) ring->prod_tail);
+	seq_printf(s, "ConsHdr:                %llx\n", (u64) ring->cons_head);
+	seq_printf(s, "ConsTail:               %llx\n", (u64) ring->cons_tail);
+	seq_printf(s, "RingBuf:                %llx\n", (u64) ring->element);
 	return 0;
 }
 
@@ -243,7 +238,12 @@ static int debugfs_mem_data_read(struct seq_file *s, void *unused)
 		unsigned int n = __mem_dump_size[mempool->type];
 		unsigned int offset = __mem_offset[mempool->type];
 		unsigned int i, j;
+		unsigned int cluster, c_offset;
 		unsigned char *data = (unsigned char *)mem->loc.base + offset;
+
+		data = fsm_dp_mem_offset_addr(mem, offset, &cluster, &c_offset);
+		if (data == NULL)
+			return 0;
 		if (n > (mem->loc.size - offset))
 			n = mem->loc.size - offset;
 
@@ -253,7 +253,14 @@ static int debugfs_mem_data_read(struct seq_file *s, void *unused)
 		for (j = 0; j < n; j++, i++) {
 			if (i && !(i % MEM_DUMP_COL_WIDTH))
 				seq_puts(s, "\n");
-			seq_printf(s, "%02x ", data[j]);
+			seq_printf(s, "%02x ", *data);
+			data++;
+			c_offset++;
+			if (c_offset >= FSM_DP_MEMPOOL_CLUSTER_SIZE) {
+				c_offset = 0;
+				cluster++;
+				data = mem->loc.cluster_kernel_addr[cluster];
+			}
 		}
 		seq_puts(s, "\n");
 	}
@@ -273,11 +280,15 @@ static ssize_t debugfs_mem_data_write(
 		struct fsm_dp_mem *mem = &mempool->mem;
 		unsigned int value = 0;
 		unsigned int *data;
+		unsigned int offset = __mem_offset[mempool->type];
+		unsigned int cluster, c_offset;
 
 		if (kstrtouint_from_user(buf, count, 0, &value))
 			return -EFAULT;
-		data = (unsigned int *)((unsigned char *)mem->loc.base +
-					 __mem_offset[mempool->type]);
+		data = (unsigned int *)fsm_dp_mem_offset_addr(
+				mem, offset, &cluster, &c_offset);
+		if (data == NULL)
+			return count;
 		*data = value;
 	}
 	return count;
@@ -363,26 +374,31 @@ static int debugfs_mem_config_show(struct seq_file *s, void *unused)
 {
 	struct fsm_dp_mempool *mempool =
 		*((struct fsm_dp_mempool **)s->private);
+	int i;
 
 	if (mempool) {
 		struct fsm_dp_mem *mem = &mempool->mem;
 
 		seq_puts(s, "MemoryAlloc:\n");
-		seq_printf(s, "         AllocAddr:     %p\n", mem->loc.base);
-		seq_printf(s, "         AllocSize:     0x%08lx\n",
+		seq_printf(s, "    AllocSize:     0x%08lx\n",
 			   mem->loc.size);
-		seq_printf(s, "         BasePageAddr:  %p\n",
-			   mem->loc.page_base);
-		seq_printf(s, "         PageOffset:    0x%x\n",
-			   mem->loc.page_off);
-		seq_printf(s, "         DMAAddr:       %08lx\n",
-			   (unsigned long)mem->loc.addr);
-		seq_printf(s, "         MmapCookie:    %08x\n",
+		seq_printf(s, "    Total Cluster:  %d\n",
+			   mem->loc.num_cluster);
+		seq_printf(s, "    Cluster Size:  0x%x\n",
+			   FSM_DP_MEMPOOL_CLUSTER_SIZE);
+		for (i = 0; i < mem->loc.num_cluster; i++)
+			seq_printf(s, "    Cluster %d Addr: %llx\n", i,
+					(u64) mem->loc.cluster_kernel_addr[i]);
+		seq_printf(s, "    Buffer Per Cluster:  %d\n",
+			   mem->loc.buf_per_cluster);
+		seq_printf(s, "    Last Cluster Order:  %d\n",
+			   mem->loc.last_cl_order);
+		seq_printf(s, "    MmapCookie:    %08x\n",
 			   mem->loc.cookie);
 		seq_printf(s, "BufSize:                0x%x\n", mem->buf_sz);
 		seq_printf(s, "BufCount:               0x%x\n", mem->buf_cnt);
-		seq_printf(s, "BufHeadRoom:            0x%x\n",
-			   mem->buf_headroom_sz);
+		seq_printf(s, "BufTrueSize:            0x%x\n",
+			   fsm_dp_buf_true_size(mem));
 
 	}
 
@@ -471,7 +487,7 @@ static int debugfs_ring_data_read(struct seq_file *s, void *unused)
 
 		elem_p = (mempool->ring.element + __ring_index[mempool->type]);
 
-		seq_printf(s, "%lu\n", elem_p->element_data);
+		seq_printf(s, "0x%lx\n", elem_p->element_data);
 	}
 	return 0;
 }
@@ -513,16 +529,16 @@ static int debugfs_mempool_state_show(struct seq_file *s, void *unused)
 	if (mempool) {
 		struct fsm_dp_mem *mem = &mempool->mem;
 		struct fsm_dp_buf_cntrl *p;
-		unsigned int off;
 
-		off = mem->loc.page_off;
 		for (i = 0; i < mem->buf_cnt; i++) {
-
 			p = (struct fsm_dp_buf_cntrl *)
-				(mem->loc.page_base + off);
+				fsm_dp_mem_rec_addr(mem, i);
+			if (p == NULL)
+				return 0;
 #ifdef FSM_DP_BUFFER_FENCING
 			if (p->signature != FSM_DP_BUFFER_SIG ||
-					p->fence != FSM_DP_BUFFER_FENCE_SIG)
+					p->fence != FSM_DP_BUFFER_FENCE_SIG ||
+					p->buf_index != i)
 				buf_bad++;
 			else if (p->state >= FSM_DP_BUF_STATE_LAST)
 #else
@@ -532,7 +548,6 @@ static int debugfs_mempool_state_show(struct seq_file *s, void *unused)
 			else
 				state_cnt[p->state]++;
 
-			off += fsm_dp_buf_true_size(mem);
 		}
 
 		seq_printf(s, "Total Buf:                  %u\n",
@@ -577,8 +592,10 @@ static int debugfs_mempool_info_show(struct seq_file *s, void *unused)
 		*((struct fsm_dp_mempool **)s->private);
 
 	if (mempool) {
-		seq_printf(s, "Driver:                 %p\n", mempool->drv);
-		seq_printf(s, "MemPool:                %p\n", mempool);
+		seq_printf(s, "Driver:                 %llx\n",
+							(u64) mempool->drv);
+		seq_printf(s, "MemPool:                %llx\n",
+							(u64) mempool);
 		seq_printf(s, "Type:                   %s\n",
 			   fsm_dp_mem_type_to_str(mempool->type));
 		seq_printf(s, "Ref:                    %d\n",
@@ -593,7 +610,7 @@ static int debugfs_mhi_show(struct seq_file *s, void *unused)
 	struct fsm_dp_drv *drv = (struct fsm_dp_drv *)s->private;
 	struct fsm_dp_mhi *mhi = &drv->mhi;
 
-	seq_printf(s, "MHIDevice:              %p\n", mhi->mhi_dev);
+	seq_printf(s, "MHIDevice:              %llx\n", (u64) mhi->mhi_dev);
 	seq_puts(s, "Stats:\n");
 	seq_printf(s, "    TX:                 %lu\n", mhi->stats.tx_cnt);
 	seq_printf(s, "    TX_ACKED:           %lu\n", mhi->stats.tx_acked);
@@ -622,10 +639,14 @@ static int debugfs_cdev_show(struct seq_file *s, void *unused)
 	mutex_lock(&drv->cdev_lock);
 	list_for_each_entry(cdev, &drv->cdev_head, list) {
 		seq_printf(s, "CDEV(%d)\n", n++);
-		seq_printf(s, "Driver:                 %p\n", cdev->pdrv);
-		seq_printf(s, "Cdev:                   %p\n", cdev);
-		seq_printf(s, "PID:                    %d\n", cdev->pid);
-		seq_printf(s, "TX_Mode:                %d\n", cdev->tx_mode);
+		seq_printf(s, "Driver:                 %llx\n",
+							(u64) cdev->pdrv);
+		seq_printf(s, "Cdev:                   %llx\n",
+							(u64) cdev);
+		seq_printf(s, "PID:                    %d\n",
+							cdev->pid);
+		seq_printf(s, "TX_Mode:                %d\n",
+							cdev->tx_mode);
 
 		for (i = 0; i < FSM_DP_MEM_TYPE_LAST; i++) {
 			seq_printf(s, "MemPoolVMA[%d]\n", i);
@@ -662,7 +683,7 @@ static int debugfs_drv_show(struct seq_file *s, void *unused)
 	struct fsm_dp_drv *drv = (struct fsm_dp_drv *)s->private;
 	struct platform_device *pdev = to_platform_device(drv->dev);
 
-	seq_printf(s, "Driver:         %p\n", drv);
+	seq_printf(s, "Driver:         %llx\n", (u64) drv);
 	seq_printf(s, "Name:           %s\n", pdev->name);
 	return 0;
 }

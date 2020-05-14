@@ -96,22 +96,25 @@ static void handle_tx_loopback(
 	struct fsm_dp_mempool *tx_mempool;
 	struct fsm_dp_mempool *mempool;
 	struct fsm_dp_rxqueue *rxq;
-	unsigned int offset, toffset;
+	unsigned int offset;
 	void *dst;
+	unsigned int cluster, tx_cl;
+	unsigned int c_offset, tx_off;
 	struct fsm_dp_buf_cntrl *p;
 	int err = FSM_DP_XMIT_OK;
 
-	tx_mempool = fsm_dp_find_mempool(drv, job->data, true);
+	tx_mempool = fsm_dp_find_mempool(drv, job->data, true, &tx_cl);
 	if (tx_mempool == NULL) {
 		drv->loopback.stats.tx_drop++;
 		FSM_DP_ERROR("%s: cannot to find source memory pool\n",
 			  __func__);
 		return;
 	}
-	toffset = job->data - tx_mempool->mem.loc.page_base +
-			tx_mempool->mem.loc.page_off;
-	toffset = toffset % fsm_dp_buf_true_size(&mempool->mem);
-	p = (struct fsm_dp_buf_cntrl *)(job->data - toffset);
+	tx_off = vaddr_offset(job->data,
+			tx_mempool->mem.loc.cluster_kernel_addr[tx_cl]);
+	tx_off = tx_off % fsm_dp_buf_true_size(&tx_mempool->mem);
+	p = (struct fsm_dp_buf_cntrl *) (job->data - tx_off);
+	p->state = FSM_DP_BUF_STATE_KERNEL_XMIT_DMA_COMP;
 
 	if (!fsm_dp_rx_type_is_valid(job->dest)) {
 		drv->loopback.stats.tx_err++;
@@ -137,7 +140,7 @@ static void handle_tx_loopback(
 		goto done_txbuf;
 	}
 
-	dst = fsm_dp_mempool_get_buf(mempool);
+	dst = fsm_dp_mempool_get_buf(mempool, &cluster, &c_offset);
 	if (dst == NULL) {
 		drv->loopback.stats.tx_err++;
 		FSM_DP_ERROR("%s: failed to get buffer\n", __func__);
@@ -145,7 +148,9 @@ static void handle_tx_loopback(
 		goto done_txbuf;
 	}
 	memcpy(dst, job->data, job->length);
-	offset = vaddr_offset(dst, mempool->mem.loc.page_base);
+
+	offset = (cluster << FSM_DP_MEMPOOL_CLUSTER_SHIFT) + c_offset;
+
 #ifdef FSM_DP_BUFFER_FENCING
 	fsm_dp_set_buf_state(dst, FSM_DP_BUF_STATE_KERNEL_RECVCMP_MSGQ_TO_APP);
 #endif
@@ -220,8 +225,9 @@ static int tx_loopback(
 	struct fsm_dp_msghdr *msghdr = data;
 	unsigned int dest = FSM_DP_RX_TYPE_LPBK;
 	unsigned long flags;
+	unsigned int cl;
 
-	mempool = fsm_dp_find_mempool(pdrv, data, true);
+	mempool = fsm_dp_find_mempool(pdrv, data, true, &cl);
 	if (mempool == NULL) {
 		FSM_DP_ERROR("%s: failed find memory pool\n", __func__);
 		return -EINVAL;
@@ -404,15 +410,16 @@ void fsm_dp_rx(struct fsm_dp_drv *pdrv, void *addr, unsigned int length)
 	struct fsm_dp_rxqueue *rxq;
 	struct fsm_dp_msghdr *msghdr;
 	unsigned int offset;
+	unsigned int cl;
 
 	if (unlikely(pdrv == NULL || addr == NULL || !length)) {
 		FSM_DP_ERROR("%s: invalid argument\n", __func__);
 		return;
 	}
 
-	mempool = fsm_dp_find_mempool(pdrv, addr, false);
+	mempool = fsm_dp_find_mempool(pdrv, addr, false, &cl);
 	if (mempool == NULL) {
-		FSM_DP_DEBUG("%s: not UL address, addr=%p\n",
+		FSM_DP_ERROR("%s: not UL address, addr=%p\n",
 			  __func__, addr);
 		return;
 	}
@@ -460,7 +467,7 @@ void fsm_dp_rx(struct fsm_dp_drv *pdrv, void *addr, unsigned int length)
 	fsm_dp_set_buf_state(msghdr,
 			FSM_DP_BUF_STATE_KERNEL_RECVCMP_MSGQ_TO_APP);
 #endif
-	offset = vaddr_offset(addr, mempool->mem.loc.page_base);
+	offset = fsm_dp_get_mem_offset(addr, &mempool->mem.loc, cl);
 	if (fsm_dp_ring_write(&rxq->ring, offset, 0)) {
 		FSM_DP_ERROR("%s: failed to enqueue rx packet\n", __func__);
 		goto free_rxbuf;
@@ -474,28 +481,30 @@ free_rxbuf:
 	fsm_dp_mempool_put_buf(mempool, addr);
 }
 
-static int fsm_dp_rx_init(struct fsm_dp_drv *pdrv)
+int fsm_dp_rx_init(struct fsm_dp_drv *pdrv)
 {
 	struct device_node *of_node = pdrv->dev->of_node;
 	const __be32 *of_prop = NULL;
 	const void *prop = NULL;
 	unsigned int len = 0, type;
 	int ret;
+	unsigned int fsm_dp_ul_buf_size = DEFAULT_FSM_MEM_BUF_SIZE;
+	unsigned int fsm_dp_ul_buf_cnt = DEFAULT_FSM_MEM_UL_BUF_CNT;
 
 	prop = of_get_property(of_node, "qcom,ul-bufs", &len);
-	if (prop && len == (sizeof(unsigned int) * 2))
+	if (prop && len == (sizeof(unsigned int) * 2)) {
 		of_prop = prop;
+		fsm_dp_ul_buf_size = be32_to_cpu(of_prop[0]);
+		fsm_dp_ul_buf_cnt = be32_to_cpu(of_prop[1]);
+	}
 
-	if (!fsm_dp_mempool_alloc(
+	pdrv->mempool[FSM_DP_MEM_TYPE_UL] = fsm_dp_mempool_alloc(
 		pdrv,
 		FSM_DP_MEM_TYPE_UL,
-		(of_prop) ?
-		be32_to_cpu(of_prop[0]) :
-		DEFAULT_FSM_MEM_BUF_SIZE,
-		(of_prop) ?
-		be32_to_cpu(of_prop[1]) :
-		DEFAULT_FSM_MEM_UL_BUF_CNT,
-		false)) {
+		fsm_dp_ul_buf_size,
+		fsm_dp_ul_buf_cnt,
+		false); /* no dma map yet since io dev is not ready */
+	if (pdrv->mempool[FSM_DP_MEM_TYPE_UL] == NULL) {
 		FSM_DP_ERROR("%s: failed to allocate UL memory pool!\n",
 				  __func__);
 		return -ENOMEM;
@@ -523,7 +532,8 @@ static void fsm_dp_rx_cleanup(struct fsm_dp_drv *pdrv)
 {
 	unsigned int type;
 
-	fsm_dp_mempool_free(pdrv->mempool[FSM_DP_MEM_TYPE_UL]);
+	if (pdrv->mempool[FSM_DP_MEM_TYPE_UL])
+		fsm_dp_mempool_free(pdrv->mempool[FSM_DP_MEM_TYPE_UL]);
 
 	for (type = 0; type < FSM_DP_RX_TYPE_LAST; type++)
 		fsm_dp_rxqueue_cleanup(&pdrv->rxq[type]);
@@ -586,8 +596,7 @@ int fsm_dp_tx(
 			pdrv->mhi.dl_buf_array[j] = iov[n].iov_base;
 			if (dma_addr_array[n]) {
 				pdrv->mhi.dl_flag_array[j] |=
-					(MHI_FLAGS_DMA_ADDR |
-						MHI_FLAGS_COHERENT_ADDR);
+					MHI_FLAGS_DMA_ADDR;
 				pdrv->mhi.dl_dma_addr_array[j] =
 					dma_addr_array[n];
 			}

@@ -20,6 +20,53 @@
 
 static struct fsm_dp_drv *__pdrv;
 
+
+/*
+ * Dump a packet.
+ */
+#define FSM_DP_HEX_DUMP_BUF_SIZE (32 * 3 + 2 + 32 + 1)
+static void fsm_dp_print_hex_dump(const char *level,
+			const char *prefix_str, int prefix_type,
+			int rowsize, int groupsize,
+			const void *buf, size_t len, bool ascii)
+{
+	const u8 *ptr = buf;
+	int i, linelen, remaining = len;
+	unsigned char linebuf[FSM_DP_HEX_DUMP_BUF_SIZE];
+
+	if (rowsize != 16 && rowsize != 32)
+		rowsize = 16;
+
+	for (i = 0; i < len; i += rowsize) {
+		linelen = min(remaining, rowsize);
+		remaining -= rowsize;
+
+		hex_dump_to_buffer(ptr + i, linelen, rowsize, groupsize,
+				   linebuf, sizeof(linebuf), ascii);
+
+		switch (prefix_type) {
+		case DUMP_PREFIX_ADDRESS:
+			printk("%s%s%p: %s\n",
+			       level, prefix_str, ptr + i, linebuf);
+			break;
+		case DUMP_PREFIX_OFFSET:
+			printk("%s%s%.8x: %s\n", level, prefix_str, i, linebuf);
+			break;
+		default:
+			printk("%s%s%s\n", level, prefix_str, linebuf);
+			break;
+		}
+	}
+}
+
+static int do_dump;
+void fsm_dp_hex_dump(unsigned char *buf, unsigned int len)
+{
+	if (do_dump)
+		fsm_dp_print_hex_dump(KERN_CONT, "", DUMP_PREFIX_OFFSET,
+			16, 1, buf, len, false);
+}
+
 static int __mhi_rx_replenish(
 	struct fsm_dp_mhi *mhi,
 	struct fsm_dp_mempool *mempool)
@@ -29,6 +76,7 @@ static int __mhi_rx_replenish(
 	void *buf;
 	int ret, i, to_xfer;
 	bool outofbuf;
+	unsigned int cluster, c_offset;
 
 	ret = 0;
 	if (nr < mhi_get_total_descriptors(mhi_dev, DMA_FROM_DEVICE) / 8)
@@ -37,7 +85,8 @@ static int __mhi_rx_replenish(
 		to_xfer = min(FSM_DP_MAX_IOV_SIZE, nr);
 		outofbuf = false;
 		for (i = 0; i < to_xfer; i++) {
-			buf = fsm_dp_mempool_get_buf(mempool);
+			buf = fsm_dp_mempool_get_buf(mempool, &cluster,
+								&c_offset);
 			if (buf == NULL) {
 				mhi->stats.rx_out_of_buf++;
 				FSM_DP_DEBUG("%s: out of rx buffer!\n", __func__);
@@ -53,20 +102,16 @@ static int __mhi_rx_replenish(
 			mhi->ul_flag_array[i] = MHI_EOT;
 			if (mempool->mem.loc.dma_mapped &&
 					buf != mempool->dummy_buf) {
-				unsigned long offset;
 
-				offset = buf - mempool->mem.loc.base;
 				mhi->ul_dma_addr_array[i] =
-					(mempool->mem.loc.dma_addr + offset);
+					mempool->mem.loc.cluster_dma_addr
+							[cluster] + c_offset;
 				/*
 				 * set flag to indicate buf is
 				 * dma handle instead of
 				 * kernal virtual addr.
-				 * We use coherent memory.
 				 */
-				mhi->ul_flag_array[i] |=
-					(MHI_FLAGS_DMA_ADDR |
-						MHI_FLAGS_COHERENT_ADDR);
+				mhi->ul_flag_array[i] |= MHI_FLAGS_DMA_ADDR;
 			}
 		}
 		ret = mhi_queue_n_transfer(mhi_dev,
@@ -111,25 +156,29 @@ static void __mhi_ul_xfer_cb(
 	struct fsm_dp_mhi *mhi = &drv->mhi;
 	void *addr = result->buf_addr;
 	struct fsm_dp_mempool *mempool;
+	unsigned int cl;
 
 	FSM_DP_DEBUG("%s: ul_xfer_result addr=%p dir=%u bytes=%lu status=%d\n",
 		     __func__, result->buf_addr, result->dir,
 		     result->bytes_xferd, result->transaction_status);
 
+	fsm_dp_hex_dump(result->buf_addr, result->bytes_xferd);
+
 	mhi->stats.tx_acked++;
 
 	/* Try DL mempool first */
-	mempool = fsm_dp_find_mempool(drv, addr, true);
+	mempool = fsm_dp_find_mempool(drv, addr, true, &cl);
 
 	/* Try UL mempool for loopback packet */
 	if (mempool == NULL)
-		mempool = fsm_dp_find_mempool(drv, addr, false);
+		mempool = fsm_dp_find_mempool(drv, addr, false, &cl);
 
 	if (unlikely(mempool == NULL)) {
 		FSM_DP_ERROR("%s: cannot find mempool, addr=%p\n",
 			  __func__, addr);
 		return;
 	}
+
 	if (mempool->signature != FSM_DP_MEMPOOL_SIG) {
 		FSM_DP_ERROR("%s: mempool %p signature 0x%x error, expect 0x%x\n",
 			  __func__, mempool, mempool->signature, FSM_DP_MEMPOOL_SIG);
@@ -137,7 +186,7 @@ static void __mhi_ul_xfer_cb(
 	}
 
 	if (atomic_read(&mempool->out_xmit) == 0) {
-		FSM_DP_ERROR("%s: mempool out xmit cnt should not be zero\n",
+		FSM_DP_ERROR("%s: mempool %p out xmit cnt should not be zero\n",
 			  __func__, mempool);
 		return;
 	}
@@ -152,13 +201,12 @@ static void __mhi_ul_xfer_cb(
 		{
 #ifdef FSM_DP_BUFFER_FENCING
 			struct fsm_dp_buf_cntrl *p;
-			unsigned long offset;
+			unsigned long cl_off;
 
-			offset = addr -
-				(mempool->mem.loc.page_base +
-				mempool->mem.loc.page_off);
-			offset = offset % fsm_dp_buf_true_size(&mempool->mem);
-			p = (struct fsm_dp_buf_cntrl *) (addr - offset);
+			cl_off = (char *) addr -
+				mempool->mem.loc.cluster_kernel_addr[cl];
+			cl_off = cl_off % fsm_dp_buf_true_size(&mempool->mem);
+			p = (struct fsm_dp_buf_cntrl *) (addr - cl_off);
 			if (p->state == FSM_DP_BUF_STATE_KERNEL_XMIT_DMA)
 				p->state =
 					FSM_DP_BUF_STATE_KERNEL_XMIT_DMA_COMP;
@@ -181,6 +229,8 @@ static void __mhi_dl_xfer_cb(
 	FSM_DP_DEBUG("%s: dl_xfer_result addr=%p dir=%u bytes=%lu status=%d\n",
 		  __func__, result->buf_addr, result->dir,
 		  result->bytes_xferd, result->transaction_status);
+
+	fsm_dp_hex_dump(result->buf_addr, result->bytes_xferd);
 
 	if (result->buf_addr == mempool->dummy_buf) {
 		mhi->stats.rx_outofbuf_drop++;
@@ -241,6 +291,8 @@ static int fsm_dp_mhi_probe(
 		return -ENODEV;
 
 	mhi_device_set_devdata(mhi_dev, __pdrv);
+
+
 	ret = mhi_prepare_for_transfer(mhi_dev);
 	if (ret) {
 		FSM_DP_ERROR("%s: mhi_prepare_for_transfer failed\n", __func__);
@@ -251,18 +303,21 @@ static int fsm_dp_mhi_probe(
 	pdrv->mhi.mhi_destroyed = false;
 	spin_lock_init(&pdrv->mhi.rx_lock);
 	spin_lock_init(&pdrv->mhi.tx_lock);
-	ret = fsm_dp_mhi_rx_replenish(pdrv);
-	if (ret) {
-		FSM_DP_ERROR("%s: fsm_dp_mhi_rx_replenish failed\n", __func__);
-		return ret;
-	}
 
-	if (pdrv->mempool[FSM_DP_MEM_TYPE_UL])
+	FSM_DP_INFO("%s: fsm_dp_mhi_rx_replenish\n", __func__);
+	if (pdrv->mempool[FSM_DP_MEM_TYPE_UL]) {
 		FSM_DP_INFO("%s: fsm_dp_mempool_dma_map FSM_DP_MEM_TYPE_UL "
 			"pool , ret %d\n", __func__,
 			fsm_dp_mempool_dma_map(pdrv,
 				pdrv->mempool[FSM_DP_MEM_TYPE_UL],
 				FSM_DP_MEM_TYPE_UL));
+		ret = fsm_dp_mhi_rx_replenish(pdrv);
+		if (ret) {
+			FSM_DP_ERROR("%s: fsm_dp_mhi_rx_replenish failed\n",
+								__func__);
+			return ret;
+		}
+	}
 	FSM_DP_DEBUG("%s: mhi_probed\n", __func__);
 	return 0;
 }

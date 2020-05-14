@@ -33,13 +33,19 @@ static inline bool is_rxqueue_mmap_cookie(unsigned int cookie)
 
 static inline void *usr_to_kern_vaddr(
 	struct fsm_dp_mempool_vma *mempool_vma,
-	void __user *addr)
+	void __user *addr,
+	unsigned int *cluster,
+	unsigned int *c_offset)
 {
 	struct fsm_dp_mempool *mempool = *mempool_vma->pp_mempool;
 	unsigned long offset = (unsigned long)addr -
 		mempool_vma->vma[FSM_DP_MMAP_TYPE_MEM]->vm_start;
 
-	return ((char *)mempool->mem.loc.page_base + offset);
+	*cluster = offset >> FSM_DP_MEMPOOL_CLUSTER_SHIFT;
+	*c_offset = offset & FSM_DP_MEMPOOL_CLUSTER_MASK;
+
+	return ((char *)mempool->mem.loc.cluster_kernel_addr[*cluster] +
+								*c_offset);
 }
 
 static inline struct fsm_dp_rxqueue *rxqueue_vma_to_rxqueue(
@@ -94,10 +100,11 @@ static int __cdev_tx(
 	int ret;
 	unsigned int flag = 0;
 	struct fsm_dp_mempool *mempool;
-	unsigned long off;
 #ifdef FSM_DP_BUFFER_FENCING
 	uint32_t iov_off_array[FSM_DP_MAX_IOV_SIZE];
 #endif
+	unsigned int c_offset;
+	unsigned int cluster;
 
 	FSM_DP_DEBUG("%s: iov_nr=%u\n", __func__, iov_nr);
 	if (iov_nr > FSM_DP_MAX_IOV_SIZE)
@@ -120,27 +127,28 @@ static int __cdev_tx(
 		mempool = *mempool_vma->pp_mempool;
 
 		/* User passes in the pointer to message payload */
-		iov[n].iov_base = usr_to_kern_vaddr(mempool_vma,
-						    iov[n].iov_base);
+		iov[n].iov_base = usr_to_kern_vaddr(
+					mempool_vma,
+					iov[n].iov_base,
+					&cluster,
+					&c_offset);
 		if (!sg || !n) {
 			iov[n].iov_base = (char *)iov[n].iov_base -
 				sizeof(struct fsm_dp_msghdr);
 			iov[n].iov_len += sizeof(struct fsm_dp_msghdr);
 			((struct fsm_dp_msghdr *)iov[n].iov_base)->sequence =
 				atomic_inc_return(&pdrv->tx_seqnum);
+			c_offset -= sizeof(struct fsm_dp_msghdr);
 		}
 #ifdef FSM_DP_BUFFER_FENCING
 		{
+			unsigned long b_backtrack;
 			struct fsm_dp_buf_cntrl *p;
-			unsigned long offset = iov[n].iov_base -
-					(mempool->mem.loc.page_base +
-					mempool->mem.loc.page_off);
-
-			offset = offset %
+			b_backtrack = c_offset %
 				fsm_dp_buf_true_size(&mempool->mem);
-			iov_off_array[n] = offset;
+			iov_off_array[n] = b_backtrack;
 			p = (struct fsm_dp_buf_cntrl *)
-				(iov[n].iov_base - offset);
+				(iov[n].iov_base - b_backtrack);
 			if (p->signature != FSM_DP_BUFFER_SIG) {
 				FSM_DP_ERROR("%s: mempool type %d buffer at "
 					"kernel addr %p corrupted, %x, exp %x\n",
@@ -162,17 +170,18 @@ static int __cdev_tx(
 			p->state = FSM_DP_BUF_STATE_KERNEL_XMIT_DMA;
 			p->xmit_status = FSM_DP_XMIT_IN_PROGRESS;
 		}
-		atomic_inc(&mempool->out_xmit);
 #endif
+		atomic_inc(&mempool->out_xmit);
 		if (mempool->mem.loc.dma_mapped &&
 				cdev->tx_mode != TX_MODE_LOOPBACK) {
-			off = iov[n].iov_base - mempool->mem.loc.base;
 			/*
 			 * set to indicate iov_base is
 			 * dma handle instead of
 			 * kernal virtual addr
 			 */
-			dma_addr[n] = mempool->mem.loc.dma_addr + off;
+			dma_addr[n] =
+				mempool->mem.loc.cluster_dma_addr[cluster] +
+								c_offset;
 		} else
 			dma_addr[n] = 0;
 
@@ -477,6 +486,9 @@ static int __mempool_mem_mmap(
 	struct fsm_dp_mem *mem;
 	unsigned long size;
 	int ret;
+	unsigned long addr = vma->vm_start;
+	int i;
+	unsigned long remainder;
 
 	if (mempool_vma->vma[FSM_DP_MMAP_TYPE_MEM]) {
 		FSM_DP_ERROR("%s: memory already mapped\n", __func__);
@@ -489,21 +501,37 @@ static int __mempool_mem_mmap(
 
 	mem = &mempool->mem;
 	size = vma->vm_end - vma->vm_start;
-	if (size < fsm_dp_mem_loc_mmap_size(&mem->loc)) {
+	remainder = mem->loc.size;
+	if (size < remainder) {
 		ret = -EINVAL;
 		FSM_DP_ERROR(
 			"%s: size(0x%lx) too small, expect at least 0x%lx\n",
-			__func__, size, fsm_dp_mem_loc_mmap_size(&mem->loc));
+			__func__, size, remainder);
 		goto out;
 	}
 
 	/* Reset pgoff */
 	vma->vm_pgoff = 0;
-	ret = dma_mmap_coherent(mempool->drv->dev, vma,
-				mem->loc.base, mem->loc.addr, mem->loc.size);
-	if (ret) {
-		FSM_DP_ERROR("%s: dma mmap failed\n", __func__);
-		goto out;
+
+	for (i = 0; i < mem->loc.num_cluster; i++) {
+		unsigned long len;
+
+		if (i ==  mem->loc.num_cluster - 1)
+			len = remainder;
+		else
+			len = FSM_DP_MEMPOOL_CLUSTER_SIZE;
+
+		ret = remap_pfn_range(vma,
+				addr,
+				page_to_pfn(mem->loc.page[i]),
+				len,
+				vma->vm_page_prot);
+		if (ret) {
+			FSM_DP_ERROR("%s: dma mmap failed\n", __func__);
+			goto out;
+		}
+		addr += len;
+		remainder -= len;
 	}
 
 	vma->vm_private_data = mempool_vma;
@@ -582,8 +610,8 @@ static int __mempool_ring_mmap(
 
 	ret = remap_pfn_range(vma,
 			      vma->vm_start,
-			      (ring->loc.addr >> PAGE_SHIFT),
-			      (ring->loc.size),
+			      page_to_pfn(ring->loc.page[0]),
+			      ring->loc.size,
 			      vma->vm_page_prot);
 	if (ret) {
 		FSM_DP_ERROR("%s: remap_pfn_range failed\n", __func__);
@@ -709,8 +737,8 @@ static int __cdev_rxqueue_mmap(
 	}
 	ret = remap_pfn_range(vma,
 			      vma->vm_start,
-			      (ring->loc.addr >> PAGE_SHIFT),
-			      (ring->loc.size),
+			      page_to_pfn(ring->loc.page[0]),
+			      ring->loc.size,
 			      vma->vm_page_prot);
 	if (ret) {
 		FSM_DP_ERROR("%s: rxqueue mmap failed, error=%d\n",
@@ -738,7 +766,7 @@ static int __fsm_dp_cdev_testring_mmap(
 
 	ret = remap_pfn_range(vma,
 			      vma->vm_start,
-			      (ring->loc.addr >> PAGE_SHIFT),
+			      page_to_pfn(ring->loc.page[0])
 			      (ring->loc.size),
 			      vma->vm_page_prot);
 	if (ret) {

@@ -371,21 +371,6 @@
 		  };
 	};
 
-	reserved-memory {
-		#address-cells = <2>;
-		#size-cells = <2>;
-		ranges;
-
-		linux,cma {
-			compatible = "shared-dma-pool";
-			alloc-ranges = <0x0 0x00000000 0x0 0xffffffff>;
-			reusable;
-			alignment = <0x0 0x400000>;
-			size = <0x0 0x8000000>;
-			linux,cma-default;
-		};
-	};
-
 	gic: interrupt-controller@6000000 {
 		compatible = "arm,gic-v3";
 		reg = <0x0 0x06000000 0 0x10000>, // GIC Dist
@@ -1420,7 +1405,7 @@
 
 	qcom,fsm-dp {
 		compatible = "qcom,fsm-dp";
-		qcom,ul-bufs = <16384 4096>;
+		qcom,ul-bufs = <16000 4096>;
 		qcom,rx-queue-size = <1024 1024 1024 1024>;
 		dma-coherent;
 	};

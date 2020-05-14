@@ -155,11 +155,13 @@ struct fsm_dp_buf_cntrl {
 	uint32_t state;
 	struct timespec ts;
 	int32_t xmit_status;
+	uint32_t buf_index;
 	unsigned char spare[FSM_DP_L1_CACHE_BYTES
 		- sizeof(uint32_t) /* signature */
 		- sizeof(uint32_t) /* state */
 		- sizeof(struct timespec) /* ts */
 		- sizeof(int32_t) /* xmit_status */
+		- sizeof(uint32_t) /* buf_index */
 		- sizeof(uint32_t)];/* fence */
 	uint32_t fence;
 } __attribute__((packed));
@@ -196,7 +198,6 @@ typedef struct fsm_dp_ring_element fsm_dp_ring_element_t;
 
 struct fsm_dp_mmap_cfg {
 	__u32 length;	/* length parameter for mmap */
-	__u32 offset;	/* page offset of memory starting address */
 	__u32 cookie;	/* last parameter for mmap */
 };
 
@@ -218,6 +219,18 @@ struct fsm_dp_mem_cfg {
 					 * size of buffer overhead,
 					 * on top of buf_sz.
 					 */
+	__u32 cluster_size;		/* cluster size in bytes.
+					 * number of buffers in a cluster:
+					 *  cluster_size /(buf_overhead_sz +
+					 *                 buf_sz)
+					 * A buffer starts at beginning of
+					 * a cluster. Spared space with
+					 * size less than (buf_overhead_sz
+					 *          +  buf_sz) at end of
+					 * a cluster is not used.
+					 */
+	__u32 num_cluster;		/* number of cluster */
+	__u32 buf_per_cluster;		/* number of buffers per cluster  */
 };
 
 struct fsm_dp_mempool_cfg {

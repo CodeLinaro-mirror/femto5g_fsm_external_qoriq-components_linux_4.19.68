@@ -837,6 +837,7 @@
 			interrupts = <GIC_SPI 37 IRQ_TYPE_LEVEL_HIGH>;
 			gpio-controller;
 			little-endian;
+			lx2160-platform;
 			#gpio-cells = <2>;
 			interrupt-controller;
 			#interrupt-cells = <2>;
@@ -1404,14 +1405,14 @@
 	};
 
 	pps {
-		gpios = <&gpio3 18 0>;
+		gpios = <&gpio3 21 0>;
 		assert-falling-edge;
 		compatible = "pps-gpio";
 		status = "okay";
 	};
 
 	tti {
-		gpios = <&gpio3 17 0>;
+		gpios = <&gpio3 23 0>;
 		assert-falling-edge;
 		compatible = "tti-gpio";
 		status = "okay";

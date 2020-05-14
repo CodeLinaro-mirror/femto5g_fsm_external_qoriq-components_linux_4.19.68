@@ -405,6 +405,13 @@ static int mpc8xxx_probe(struct platform_device *pdev)
 	/* ack and mask all irqs */
 	gc->write_reg(mpc8xxx_gc->regs + GPIO_IER, 0xffffffff);
 	gc->write_reg(mpc8xxx_gc->regs + GPIO_IMR, 0);
+
+        if (of_property_read_bool(np, "lx2160-platform")) {
+		gc->write_reg(mpc8xxx_gc->regs + GPIO_IMR, 0x500);
+		gc->write_reg(mpc8xxx_gc->regs + GPIO_IBE, 0x500);
+		dev_dbg(&pdev->dev, "lx2160 platform configured\n");
+        }
+
 	/* enable input buffer  */
 	if (devtype->gpio_dir_in_init)
 		devtype->gpio_dir_in_init(gc);

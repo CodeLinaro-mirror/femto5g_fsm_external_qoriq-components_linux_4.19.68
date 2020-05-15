@@ -42,7 +42,7 @@ static irqreturn_t fsm_tti_gpio_irq_handler(int irq, void *irq_data)
 
 			sdata->sfn_slot_info.slot =
 				(sdata->sfn_slot_info.slot + 1) %
-				FSM_TTI_DEFAULT_MAX_SLOT_NUM;
+				sdata->max_slot;
 
 			if (sdata->sfn_slot_info.slot == 0)
 				sdata->sfn_slot_info.sfn =

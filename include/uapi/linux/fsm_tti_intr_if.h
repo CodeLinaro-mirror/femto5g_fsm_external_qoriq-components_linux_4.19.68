@@ -22,7 +22,6 @@
 		_IOW(FSM_TTI_IOCTL_BASE, 1, struct fsm_tti_mmap_info)
 
 #define FSM_TTI_MAX_SFN_NUM		1024
-#define FSM_TTI_DEFAULT_MAX_SLOT_NUM	80
 #define FSM_TTI_MAX_SFN_MOD_FACTOR	0x3FF /* equivalent to MOD 1024 */
 
 union sfn_slot_info
@@ -52,6 +51,9 @@ struct fsm_tti_mmap_info {
 	/* Timestamp Information */
 	unsigned long long	intr_recv_count;
 	unsigned long long	abs_recv_time;
+
+	/* max slot number */
+	unsigned short		max_slot;
 };
 
 #endif /* __FSM_TTI_INTR_IF__ */

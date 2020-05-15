@@ -87,10 +87,11 @@ static long fsm_tti_intr_cdev_ioctl(
 		tti_drv_cntx->debugfs_stats.sfn_slot_seeding_time = ktime_get();
 
 		FSM_TTI_INFO(
-			"FSM-TTI: %s: initial sfn: %u, slot: %u, time:%lld\n",
+			"FSM-TTI: %s: initial sfn: %u, slot: %u, max_slot: %u, time:%lld\n",
 			__func__,
 			tti_drv_cntx->shared_data->sfn_slot_info.sfn,
 			tti_drv_cntx->shared_data->sfn_slot_info.slot,
+			tti_drv_cntx->shared_data->max_slot,
 			tti_drv_cntx->debugfs_stats.sfn_slot_seeding_time);
 		break;
 	default:

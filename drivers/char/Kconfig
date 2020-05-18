@@ -544,6 +544,8 @@ source "drivers/char/fsm-dp/Kconfig"
 
 source "drivers/char/fsm-tti-intr/Kconfig"
 
+source "drivers/char/fsm-oru-forwarder/Kconfig"
+
 config ADI
 	tristate "SPARC Privileged ADI driver"
 	depends on SPARC64

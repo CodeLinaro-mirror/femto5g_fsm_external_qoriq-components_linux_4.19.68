@@ -66,6 +66,7 @@ void fsm_dp_hex_dump(unsigned char *buf, unsigned int len)
 		fsm_dp_print_hex_dump(KERN_CONT, "", DUMP_PREFIX_OFFSET,
 			16, 1, buf, len, false);
 }
+EXPORT_SYMBOL(fsm_dp_hex_dump);
 
 static int __mhi_rx_replenish(
 	struct fsm_dp_mhi *mhi,
@@ -148,6 +149,21 @@ static int __mhi_rx_replenish(
 	return ret;
 }
 
+static void __mhi_ul_skb_xfer_cmplt(struct sk_buff *skb)
+{
+	struct fsm_dp_msghdr *msghdr;
+	struct fsm_dp_kernel_register_db_entry *preg;
+
+	msghdr = (struct fsm_dp_msghdr *)skb->data;
+	preg = fsm_dp_find_reg_db_type(msghdr->type);
+	if (!preg || !preg->tx_cmplt_cb) {
+		kfree_skb(skb);
+		return;
+	}
+	skb_pull(skb, sizeof(*msghdr));
+	preg->tx_cmplt_cb(skb);
+}
+
 static void __mhi_ul_xfer_cb(
 	struct mhi_device *mhi_dev,
 	struct mhi_result *result)
@@ -162,8 +178,14 @@ static void __mhi_ul_xfer_cb(
 		     __func__, result->buf_addr, result->dir,
 		     result->bytes_xferd, result->transaction_status);
 
-	fsm_dp_hex_dump(result->buf_addr, result->bytes_xferd);
 
+
+	if (result->buf_indirect) {
+		__mhi_ul_skb_xfer_cmplt((struct sk_buff *) addr);
+		return;
+	}
+
+	fsm_dp_hex_dump(result->buf_addr, result->bytes_xferd);
 	mhi->stats.tx_acked++;
 
 	/* Try DL mempool first */

@@ -12,6 +12,8 @@
 #ifndef _MHI_H_
 #define _MHI_H_
 
+#include <linux/skbuff.h>
+
 struct mhi_chan;
 struct mhi_event;
 struct mhi_ctxt;
@@ -343,6 +345,8 @@ struct mhi_device {
 	int (*dl_n_xfer)(struct mhi_device *, struct mhi_chan *, void **,
 			size_t *, enum MHI_FLAGS *, dma_addr_t *,
 			unsigned int);
+	int (*ul_skb_xfer)(struct mhi_device *mhi_dev, struct mhi_chan *chan,
+				void *skb, size_t len, enum MHI_FLAGS flags);
 	void (*status_cb)(struct mhi_device *, enum MHI_CB);
 };
 
@@ -352,12 +356,17 @@ struct mhi_device {
  * @dir: Channel direction
  * @bytes_xfer: # of bytes transferred
  * @transaction_status: Status of last trasnferred
+ * @buf_indirect:
+ *            true  - in-direct (such as skb)
+ *	      false - direct where buf_addr is pointing to buffer address
+ *            Some client may need to support both types
  */
 struct mhi_result {
 	void *buf_addr;
 	enum dma_data_direction dir;
 	size_t bytes_xferd;
 	int transaction_status;
+	bool buf_indirect;
 };
 
 /**
@@ -430,6 +439,14 @@ static inline int mhi_queue_transfer(struct mhi_device *mhi_dev,
 	else
 		return mhi_dev->dl_xfer(mhi_dev, mhi_dev->dl_chan, buf, len,
 					mflags);
+}
+static inline int mhi_ul_skb_xfer(struct mhi_device *mhi_dev,
+		struct sk_buff *skb)
+{
+	if (!mhi_dev->ul_skb_xfer)
+		return -EIO;
+	return mhi_dev->ul_skb_xfer(mhi_dev, mhi_dev->ul_chan, skb,
+					skb->len, MHI_EOT);
 }
 
 static inline int mhi_queue_n_transfer(struct mhi_device *mhi_dev,

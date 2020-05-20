@@ -195,6 +195,14 @@ struct fsm_dp_drv {
 #endif
 };
 
+struct fsm_dp_kernel_register_db_entry {
+	struct fsm_dp_drv *pdrv;
+	enum fsm_dp_msg_type msg_type;
+	int (*tx_cmplt_cb)(struct sk_buff *skb);
+	int (*rx_cb)(struct page *p, unsigned int page_offset, char *buf,
+			unsigned int length);
+};
+
 int fsm_dp_cdev_init(struct fsm_dp_drv *pdrv);
 void fsm_dp_cdev_cleanup(struct fsm_dp_drv *pdrv);
 
@@ -212,5 +220,26 @@ int fsm_dp_tx(
 void fsm_dp_rx(struct fsm_dp_drv *pdrv, void *data, unsigned int length);
 
 void fsm_dp_hex_dump(unsigned char *buf, unsigned int len);
+
+static inline struct fsm_dp_kernel_register_db_entry *
+fsm_dp_find_reg_db_type(enum fsm_dp_msg_type msg_type)
+{
+	extern struct fsm_dp_kernel_register_db_entry fsm_dp_reg_db[];
+
+	switch (msg_type) {
+	case FSM_DP_MSG_TYPE_L1:
+	case FSM_DP_MSG_TYPE_RF:
+	case FSM_DP_MSG_TYPE_TA:
+	case FSM_DP_MSG_TYPE_ORU:
+		return &fsm_dp_reg_db[msg_type];
+	case FSM_DP_MSG_TYPE_LPBK_REQ:
+		return &fsm_dp_reg_db[FSM_DP_MSG_TYPE_ORU] + 1;
+	case FSM_DP_MSG_TYPE_LPBK_RSP:
+		return &fsm_dp_reg_db[FSM_DP_MSG_TYPE_ORU] + 2;
+	default:
+		break;
+	}
+	return NULL;
+};
 
 #endif /* __FSM_DP__ */

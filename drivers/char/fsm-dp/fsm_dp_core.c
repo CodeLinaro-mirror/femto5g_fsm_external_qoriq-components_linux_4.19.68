@@ -16,16 +16,19 @@
 #include <linux/dma-mapping.h>
 #include <linux/platform_device.h>
 #include <linux/of_device.h>
-
+#include <linux/skbuff.h>
 #include "fsm_dp.h"
 
 #define DEFAULT_LOOPBACK_JOB_NUM 8192
 #define FSM_DP_NAPI_WEIGHT 64
+static struct fsm_dp_drv *fsm_dp_pdrv;
+struct fsm_dp_kernel_register_db_entry fsm_dp_reg_db[FSM_DP_NUM_MSG_TYPE];
 
 #ifdef CONFIG_FSM_DP_TEST
 
 #define DEFAULT_TEST_RING_SIZE 2048
 #define TEST_RING_MMAP_COOKIE	0x80000000
+
 
 
 static int fsm_dp_test_init(struct fsm_dp_drv *pdrv)
@@ -411,6 +414,7 @@ void fsm_dp_rx(struct fsm_dp_drv *pdrv, void *addr, unsigned int length)
 	struct fsm_dp_msghdr *msghdr;
 	unsigned int offset;
 	unsigned int cl;
+	struct fsm_dp_kernel_register_db_entry *preg;
 
 	if (unlikely(pdrv == NULL || addr == NULL || !length)) {
 		FSM_DP_ERROR("%s: invalid argument\n", __func__);
@@ -432,6 +436,16 @@ void fsm_dp_rx(struct fsm_dp_drv *pdrv, void *addr, unsigned int length)
 		goto free_rxbuf;
 	}
 
+	preg = fsm_dp_find_reg_db_type(msghdr->type);
+	if (preg && preg->pdrv && preg->rx_cb) {
+		preg->rx_cb(
+			mempool->mem.loc.page[cl],
+			(char *) addr -
+				mempool->mem.loc.cluster_kernel_addr[cl],
+			(char *) addr,
+			length);
+		goto done;
+	}
 	switch (msghdr->type) {
 	case FSM_DP_MSG_TYPE_LPBK_REQ:
 		if (rx_loopback(pdrv, addr, length))
@@ -538,6 +552,106 @@ static void fsm_dp_rx_cleanup(struct fsm_dp_drv *pdrv)
 	for (type = 0; type < FSM_DP_RX_TYPE_LAST; type++)
 		fsm_dp_rxqueue_cleanup(&pdrv->rxq[type]);
 }
+
+int fsm_dp_rel_rx_buf(
+	void *handle,
+	unsigned char *buf
+)
+{
+	struct fsm_dp_kernel_register_db_entry *preg =
+			(struct fsm_dp_kernel_register_db_entry *) handle;
+	struct fsm_dp_mempool *mempool;
+
+	if (!preg || !preg->pdrv)
+		return -EINVAL;
+	mempool = preg->pdrv->mempool[FSM_DP_MEM_TYPE_UL];
+	if (!mempool)
+		return -EINVAL;
+	fsm_dp_mempool_put_buf(mempool, buf);
+	return 0;
+}
+EXPORT_SYMBOL(fsm_dp_rel_rx_buf);
+
+void fsm_dp_deregister_kernel_client(
+	void *handle,
+	enum fsm_dp_msg_type msg_type
+)
+{
+	struct fsm_dp_kernel_register_db_entry *preg =
+			(struct fsm_dp_kernel_register_db_entry *) handle;
+
+	if (!handle)
+		return;
+	if (preg->msg_type != msg_type)
+		return;
+	preg->pdrv = NULL;
+};
+EXPORT_SYMBOL(fsm_dp_deregister_kernel_client);
+
+void *fsm_dp_register_kernel_client(
+	enum fsm_dp_msg_type msg_type,
+	int (*tx_cmplt_cb)(struct sk_buff *skb),
+	int (*rx_cb)(struct page *p, unsigned int page_offset, char *buf,
+				unsigned int length)
+)
+{
+	struct fsm_dp_kernel_register_db_entry *preg;
+
+	if (!fsm_dp_pdrv)
+		return NULL;
+	preg = fsm_dp_find_reg_db_type(msg_type);
+	if (!preg)
+		return NULL;
+	if (preg->pdrv) /* already register ? */
+		return NULL;
+	preg->msg_type = msg_type;
+	preg->pdrv = fsm_dp_pdrv;
+	preg->tx_cmplt_cb = tx_cmplt_cb;
+	preg->rx_cb = rx_cb;
+	return preg;
+}
+EXPORT_SYMBOL(fsm_dp_register_kernel_client);
+
+/*
+ * fsm_dp_tx_skb
+ *     Tx skb to device. skb its data is pointing to fsm dp packet payload.
+ *     This function assumes skb is not nonlinear.
+ */
+int fsm_dp_tx_skb(
+	void *handle,
+	struct sk_buff *skb
+)
+{
+	struct fsm_dp_kernel_register_db_entry *preg =
+			(struct fsm_dp_kernel_register_db_entry *) handle;
+	struct fsm_dp_msghdr *msghdr;
+	unsigned int plen;
+	int ret = 0;
+
+	if (!preg || !preg->pdrv || !skb || skb_is_nonlinear(skb))
+		return -EINVAL;
+	if (skb_headroom(skb) < sizeof(*msghdr))
+		return -ENOMEM;
+	plen = skb->len;
+	skb_push(skb, sizeof(*msghdr));
+	msghdr = (struct fsm_dp_msghdr *)skb->data;
+	msghdr->type = preg->msg_type;
+	msghdr->reserved = 0;
+	msghdr->aggr = 0;
+	msghdr->version = FSM_DP_MSG_HDR_VERSION;
+	msghdr->sequence = atomic_inc_return(&preg->pdrv->tx_seqnum);
+	msghdr->length = plen;
+
+	spin_lock_bh(&preg->pdrv->mhi.tx_lock);
+	ret = fsm_dp_mhi_skb_ul_xfer(&preg->pdrv->mhi, skb);
+	if (ret)
+		preg->pdrv->stats.tx_err++;
+	else
+		preg->pdrv->stats.tx_cnt++;
+	spin_unlock_bh(&preg->pdrv->mhi.tx_lock);
+	return ret;
+}
+EXPORT_SYMBOL(fsm_dp_tx_skb);
 
 int fsm_dp_tx(
 	struct fsm_dp_drv *pdrv,
@@ -708,6 +822,7 @@ static int fsm_dp_probe(struct platform_device *pdev)
 		return -ENOMEM;
 
 	pdrv->dev = &pdev->dev;
+	fsm_dp_pdrv = pdrv;
 
 	ret = fsm_dp_core_init(pdrv);
 	if (ret)
@@ -742,6 +857,7 @@ cleanup_mhi:
 	fsm_dp_mhi_cleanup(pdrv);
 cleanup:
 	fsm_dp_core_cleanup(pdrv);
+	fsm_dp_pdrv = NULL;
 	pr_err("FSM-DP: module init failed!\n");
 	return ret;
 }
@@ -759,6 +875,7 @@ static int fsm_dp_remove(struct platform_device *pdev)
 		fsm_dp_debugfs_cleanup(pdrv);
 		fsm_dp_core_cleanup(pdrv);
 	}
+	fsm_dp_pdrv = NULL;
 
 	return 0;
 }

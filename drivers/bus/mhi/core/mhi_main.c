@@ -419,6 +419,7 @@ int mhi_queue_skb(struct mhi_device *mhi_dev,
 	if (assert_wake)
 		buf_info->wake_put = true;
 	buf_info->dma_flag = false;
+	buf_info->buf_type_skb = true;
 	ret = mhi_cntrl->map_single(mhi_cntrl, buf_info);
 	if (ret)
 		goto map_error;
@@ -488,6 +489,7 @@ int mhi_gen_n_tre(struct mhi_controller *mhi_cntrl,
 		buf_info->wp = tre_ring->wp;
 		buf_info->dir = mhi_chan->dir;
 		buf_info->len = buf_len_array[i];
+		buf_info->buf_type_skb = false;
 		phy = (!!(flags_array[i] & MHI_FLAGS_DMA_ADDR)
 					&& dma_addr_array);
 		if (phy)
@@ -555,6 +557,7 @@ int mhi_gen_tre(struct mhi_controller *mhi_cntrl,
 	buf_info->dir = mhi_chan->dir;
 	buf_info->len = buf_len;
 	buf_info->dma_flag = false;
+	buf_info->buf_type_skb = false;
 	if (mhi_chan->dir == DMA_TO_DEVICE)
 		buf_info->wake_put = true;
 
@@ -833,6 +836,7 @@ void mhi_create_devices(struct mhi_controller *mhi_cntrl)
 			mhi_dev->ul_xfer = mhi_chan->queue_xfer;
 			mhi_dev->ul_n_xfer = mhi_chan->queue_n_xfer;
 			mhi_dev->ul_event_id = mhi_chan->er_index;
+			mhi_dev->ul_skb_xfer = mhi_queue_skb;
 			break;
 		case DMA_NONE:
 		case DMA_BIDIRECTIONAL:
@@ -858,6 +862,7 @@ void mhi_create_devices(struct mhi_controller *mhi_cntrl)
 					mhi_dev->ul_chan_id = mhi_chan->chan;
 					mhi_dev->ul_xfer = mhi_chan->queue_xfer;
 					mhi_dev->ul_n_xfer = mhi_chan->queue_n_xfer;
+					mhi_dev->ul_skb_xfer = mhi_queue_skb;
 					mhi_dev->ul_event_id =
 						mhi_chan->er_index;
 				} else {
@@ -959,6 +964,7 @@ static int parse_xfer_event(struct mhi_controller *mhi_cntrl,
 							buf_info->dir);
 			} else
 				mhi_cntrl->unmap_single(mhi_cntrl, buf_info);
+			result.buf_indirect = buf_info->buf_type_skb;
 			result.buf_addr = buf_info->cb_buf;
 			result.bytes_xferd = xfer_len;
 			mhi_del_ring_element(mhi_cntrl, buf_ring);
@@ -1686,7 +1692,15 @@ void mhi_reset_chan(struct mhi_controller *mhi_cntrl, struct mhi_chan *mhi_chan)
 		if (buf_info->wake_put && mhi_chan->dir == DMA_TO_DEVICE)
 			mhi_cntrl->wake_put(mhi_cntrl, false);
 
-		mhi_cntrl->unmap_single(mhi_cntrl, buf_info);
+
+		if (buf_info->dma_flag & MHI_DMA_PHY) {
+			if (!(buf_info->dma_flag & MHI_DMA_COHERENT))
+				dma_sync_single_for_cpu(mhi_cntrl->dev,
+						buf_info->p_addr, buf_info->len,
+							buf_info->dir);
+		} else
+			mhi_cntrl->unmap_single(mhi_cntrl, buf_info);
+
 		mhi_del_ring_element(mhi_cntrl, buf_ring);
 		mhi_del_ring_element(mhi_cntrl, tre_ring);
 
@@ -1694,6 +1708,7 @@ void mhi_reset_chan(struct mhi_controller *mhi_cntrl, struct mhi_chan *mhi_chan)
 			kfree(buf_info->cb_buf);
 		} else {
 			result.buf_addr = buf_info->cb_buf;
+			result.buf_indirect = buf_info->buf_type_skb;
 			mhi_chan->xfer_cb(mhi_chan->mhi_dev, &result);
 		}
 	}

@@ -510,6 +510,13 @@ int fsm_dp_rx_init(struct fsm_dp_drv *pdrv)
 		of_prop = prop;
 		fsm_dp_ul_buf_size = be32_to_cpu(of_prop[0]);
 		fsm_dp_ul_buf_cnt = be32_to_cpu(of_prop[1]);
+		if (fsm_dp_ul_buf_size > FSM_DP_MAX_UL_MSG_LEN) {
+			FSM_DP_ERROR("%s: UL buffer size %d defined in dts exceeds limit %d\n",
+				__func__,
+				fsm_dp_ul_buf_size,
+				FSM_DP_MAX_UL_MSG_LEN);
+			return -ENOMEM;
+		}
 	}
 
 	pdrv->mempool[FSM_DP_MEM_TYPE_UL] = fsm_dp_mempool_alloc(

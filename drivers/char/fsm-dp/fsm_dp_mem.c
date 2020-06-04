@@ -675,6 +675,11 @@ struct fsm_dp_mempool *fsm_dp_mempool_alloc(
 		return NULL;
 	if (unlikely(((ULONG_MAX) / (buf_sz + FSM_DP_L1_CACHE_BYTES) < buf_cnt)))
 		return NULL;
+	if (buf_sz > FSM_DP_MAX_DL_MSG_LEN) {
+		FSM_DP_ERROR("%s: mempool alloc buffer size %d exceeds limit %d\n",
+			__func__, buf_sz, FSM_DP_MAX_DL_MSG_LEN);
+		return NULL;
+	}
 
 	ring_sz = calc_ring_size(buf_cnt);
 	if (unlikely(!ring_sz))

@@ -22,6 +22,8 @@
 #define FSM_DP_MAX_IOV_SIZE	64
 #define FSM_DP_MAX_SG_IOV_SIZE	8
 
+
+
 #define FSM_DP_IOCTL_BASE			'f'
 
 #define FSM_DP_IOCTL_MEMPOOL_ALLOC	\
@@ -149,6 +151,13 @@ struct fsm_dp_aggrhdr {
  */
 #define FSM_DP_XMIT_IN_PROGRESS (1)
 #define FSM_DP_XMIT_OK		0
+
+/*
+ * maximum mtu size for FSM DP application, including fsm_dp header
+ * Note, need to make sure both sides in sync between NPU, and Q6
+ */
+#define FSM_DP_MAX_DL_MSG_LEN   ((16 * 1024) - FSM_DP_L1_CACHE_BYTES)
+#define FSM_DP_MAX_UL_MSG_LEN   ((16 * 1024) - FSM_DP_L1_CACHE_BYTES)
 
 struct fsm_dp_buf_cntrl {
 	uint32_t signature;

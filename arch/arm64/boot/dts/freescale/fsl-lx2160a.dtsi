@@ -1405,7 +1405,7 @@
 
 	qcom,fsm-dp {
 		compatible = "qcom,fsm-dp";
-		qcom,ul-bufs = <16000 4096>;
+		qcom,ul-bufs = <16320 4096>;
 		qcom,rx-queue-size = <1024 1024 1024 1024>;
 		dma-coherent;
 	};

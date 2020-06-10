@@ -421,6 +421,7 @@ static void fsm_dp_mem_cleanup(struct fsm_dp_mem *mem)
 	int i;
 	unsigned int size;
 
+	spin_lock(&mempool->lock);
 	if (mem->loc.dma_mapped) {
 		size = mem->loc.size;
 		for (i = 0; i < mem->loc.num_cluster; i++) {
@@ -440,6 +441,9 @@ static void fsm_dp_mem_cleanup(struct fsm_dp_mem *mem)
 			}
 		}
 	}
+	mem->loc.dma_mapped = false;
+	spin_unlock(&mempool->lock);
+
 	__buf_mem_free(&mem->loc);
 	memset(mem, 0, sizeof(*mem));
 }
@@ -680,6 +684,10 @@ struct fsm_dp_mempool *fsm_dp_mempool_alloc(
 			__func__, buf_sz, FSM_DP_MAX_DL_MSG_LEN);
 		return NULL;
 	}
+	if (pdrv->mhi.mhi_destroyed) {
+		FSM_DP_WARN("%s: mhi device destroyed\n", __func__);
+		return NULL;
+	}
 
 	ring_sz = calc_ring_size(buf_cnt);
 	if (unlikely(!ring_sz))
@@ -706,6 +714,7 @@ struct fsm_dp_mempool *fsm_dp_mempool_alloc(
 		goto done;
 	atomic_set(&mempool->ref, 1);
 	atomic_set(&mempool->out_xmit, 0);
+	spin_lock_init(&mempool->lock);
 	pdrv->mempool[type] = mempool;
 	goto done;
 mempool_hold:
@@ -726,6 +735,46 @@ void fsm_dp_mempool_free(struct fsm_dp_mempool *mempool)
 	pdrv->mempool[mempool->type] = NULL;
 	wmb();
 	return;
+}
+
+void fsm_dp_mempool_dev_destroy(struct fsm_dp_drv *pdrv)
+{
+	struct fsm_dp_mempool *mempool;
+	int i;
+	int j;
+	unsigned int size;
+	struct fsm_dp_mem *mem;
+
+
+	for (j = 0; j < FSM_DP_MEM_TYPE_LAST; j++) {
+		mempool = pdrv->mempool[j];
+		if (!mempool)
+			continue;
+		if (!spin_trylock(&mempool->lock))
+			continue;
+		mem = &mempool->mem;
+		if (mem->loc.dma_mapped) {
+			size = mem->loc.size;
+			for (i = 0; i < mem->loc.num_cluster; i++) {
+				if (i ==  mem->loc.num_cluster - 1) {
+					dma_unmap_single(
+						pdrv->mhi.mhi_dev->mhi_cntrl->dev,
+						mem->loc.cluster_dma_addr[i],
+						size,
+						mem->loc.direction);
+				} else {
+					dma_unmap_single(
+						pdrv->mhi.mhi_dev->mhi_cntrl->dev,
+						mem->loc.cluster_dma_addr[i],
+						FSM_DP_MEMPOOL_CLUSTER_SIZE,
+						mem->loc.direction);
+					size -= FSM_DP_MEMPOOL_CLUSTER_SIZE;
+				}
+			}
+			mem->loc.dma_mapped = false;
+		}
+		spin_unlock(&mempool->lock);
+	}
 }
 
 int fsm_dp_mempool_get_cfg(
@@ -902,5 +951,4 @@ struct fsm_dp_mempool *fsm_dp_find_mempool(
 	}
 	return NULL;
 }
-
 

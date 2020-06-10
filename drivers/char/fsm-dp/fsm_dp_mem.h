@@ -103,6 +103,7 @@ struct fsm_dp_mempool {
 	atomic_t out_xmit;
 	struct fsm_dp_mempool_stats stats;
 	char *dummy_buf;
+	spinlock_t lock;
 };
 
 struct fsm_dp_mempool *fsm_dp_mempool_alloc(

@@ -242,4 +242,6 @@ fsm_dp_find_reg_db_type(enum fsm_dp_msg_type msg_type)
 	return NULL;
 };
 
+void fsm_dp_mempool_dev_destroy(struct fsm_dp_drv *pdrv);
+
 #endif /* __FSM_DP__ */

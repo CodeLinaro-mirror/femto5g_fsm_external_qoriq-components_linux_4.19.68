@@ -558,7 +558,7 @@ static int fsm_oru_fwd_send2_net(
 		skb = __dev_alloc_skb(sizeof(*hdr), GFP_ATOMIC);
 	if (!skb) {
 		_fwd_to_net_err++;
-		goto err_rel;
+		return -ENOMEM;
 	}
 	skb->dev = fsm_oru_forwarder_netdev;
 
@@ -600,22 +600,11 @@ static int fsm_oru_fwd_send2_net(
 
 	/* tx to eth dev */
 	rc = dev_queue_xmit(skb);
-	if (rc) {
+	if (rc)
 		_fwd_to_net_err++;
-		goto err_ref;
-	} else {
+	else
 		_fwd_to_net_cnt++;
-	}
 	return 0;
-err_ref:
-	page_ref_dec(page);
-	skb->destructor = NULL;
-	skb->len = ETH_HLEN;
-	skb->data_len = 0;
-	skb_shinfo(skb)->nr_frags = 0;
-	kfree_skb(skb);
-err_rel:
-	return rc;
 }
 
 int fsm_oru_fwd_rx_ind_cb(

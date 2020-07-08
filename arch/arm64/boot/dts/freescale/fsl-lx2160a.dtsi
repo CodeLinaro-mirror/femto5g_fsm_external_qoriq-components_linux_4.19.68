@@ -1172,9 +1172,6 @@
 					<0000 0 0 3 &gic 0 0 GIC_SPI 111 IRQ_TYPE_LEVEL_HIGH>,
 					<0000 0 0 4 &gic 0 0 GIC_SPI 112 IRQ_TYPE_LEVEL_HIGH>;
 			status = "disabled";
-			pcie_rc1: pcie_rc1@0,0 {
-				reg = <0 0 0 0 0>;
-			};
 		};
 
 		pcie_ep@3400000 {
@@ -1211,9 +1208,6 @@
 					<0000 0 0 3 &gic 0 0 GIC_SPI 116 IRQ_TYPE_LEVEL_HIGH>,
 					<0000 0 0 4 &gic 0 0 GIC_SPI 117 IRQ_TYPE_LEVEL_HIGH>;
 			status = "disabled";
-			pcie_rc2: pcie_rc2@0,0 {
-				reg = <0 0 0 0 0>;
-			};
 		};
 
 		pcie_ep@3500000 {
@@ -1294,9 +1288,6 @@
 					<0000 0 0 3 &gic 0 0 GIC_SPI 126 IRQ_TYPE_LEVEL_HIGH>,
 					<0000 0 0 4 &gic 0 0 GIC_SPI 127 IRQ_TYPE_LEVEL_HIGH>;
 			status = "disabled";
-			pcie_rc4: pcie_rc4@0,0 {
-				reg = <0 0 0 0 0>;
-			};
 		};
 
 		pcie_ep@3700000 {
@@ -1333,9 +1324,6 @@
 					<0000 0 0 3 &gic 0 0 GIC_SPI 131 IRQ_TYPE_LEVEL_HIGH>,
 					<0000 0 0 4 &gic 0 0 GIC_SPI 132 IRQ_TYPE_LEVEL_HIGH>;
 			status = "disabled";
-			pcie_rc5: pcie_rc5@0,0 {
-				reg = <0 0 0 0 0>;
-			};
 		};
 
 		pcie_ep@3800000 {
@@ -1373,9 +1361,6 @@
 					<0000 0 0 3 &gic 0 0 GIC_SPI 106 IRQ_TYPE_LEVEL_HIGH>,
 					<0000 0 0 4 &gic 0 0 GIC_SPI 107 IRQ_TYPE_LEVEL_HIGH>;
 			status = "disabled";
-			pcie_rc6: pcie_rc6@0,0 {
-				reg = <0 0 0 0 0>;
-			};
 		};
 
 		pcie_ep@3900000 {

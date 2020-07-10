@@ -27,6 +27,11 @@ struct fsm_oru_fwd_cfg {
 	uint8_t  dev[FSM_ORU_FWD_MAX_STR_LEN];
 	uint16_t ether_type;
 	uint8_t  du_mac[ETH_ALEN];
+	bool     use_ip;
+	uint32_t du_ip_addr;	/* DU IP address in host order */
+	uint32_t my_ip_addr;	/* My IP address of dev interface */
+	uint16_t du_udp_port;	/* DU UDP port */
+	uint16_t my_udp_port;	/* My UDP port */
 	uint8_t  vlan_enabled;
 	uint8_t  vlan_id;
 	uint8_t  vlan_priority;
@@ -51,6 +56,7 @@ struct fwd_stats {
 	uint64_t fwd_to_net_cnt;
 	uint64_t fwd_to_net_err;
 	uint64_t fwd_free_ul_buf;
+	uint64_t fwd_netdev_other_cnt;
 };
 
 struct fsm_oru_fwd_nl_msg_s {

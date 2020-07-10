@@ -622,7 +622,6 @@ EXPORT_SYMBOL(fsm_dp_register_kernel_client);
 /*
  * fsm_dp_tx_skb
  *     Tx skb to device. skb its data is pointing to fsm dp packet payload.
- *     This function assumes skb is not nonlinear.
  */
 int fsm_dp_tx_skb(
 	void *handle,
@@ -635,7 +634,7 @@ int fsm_dp_tx_skb(
 	unsigned int plen;
 	int ret = 0;
 
-	if (!preg || !preg->pdrv || !skb || skb_is_nonlinear(skb))
+	if (!preg || !preg->pdrv || !skb)
 		return -EINVAL;
 	if (skb_headroom(skb) < sizeof(*msghdr))
 		return -ENOMEM;

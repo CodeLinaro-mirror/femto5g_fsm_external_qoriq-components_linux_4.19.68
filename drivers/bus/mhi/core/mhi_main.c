@@ -379,10 +379,16 @@ int mhi_queue_skb(struct mhi_device *mhi_dev,
 	struct mhi_tre *mhi_tre;
 	bool assert_wake = false;
 	int ret;
+	uint32_t nseg = 1;
+	uint32_t i;
+	void *save_tre_wp;
+	void *save_buf_wp;
+	bool last;
 
-	if (mhi_is_ring_full(mhi_cntrl, tre_ring))
-		return -ENOMEM;
-
+	if (skb_is_nonlinear(skb))
+		nseg += skb_shinfo(skb)->nr_frags;
+	if (get_nr_avail_ring_elements(mhi_cntrl, tre_ring) < nseg)
+		return -EAGAIN;
 	read_lock_bh(&mhi_cntrl->pm_lock);
 	if (unlikely(MHI_PM_IN_ERROR_STATE(mhi_cntrl->pm_state))) {
 		MHI_VERB("MHI is not in activate state, pm_state:%s\n",
@@ -409,34 +415,56 @@ int mhi_queue_skb(struct mhi_device *mhi_dev,
 		mhi_cntrl->wake_get(mhi_cntrl, false);
 	}
 
-	/* generate the tre */
-	buf_info = buf_ring->wp;
-	buf_info->v_addr = skb->data;
-	buf_info->cb_buf = skb;
-	buf_info->wp = tre_ring->wp;
-	buf_info->dir = mhi_chan->dir;
-	buf_info->len = len;
-	if (assert_wake)
-		buf_info->wake_put = true;
-	buf_info->dma_flag = false;
-	buf_info->buf_type_skb = true;
-	ret = mhi_cntrl->map_single(mhi_cntrl, buf_info);
-	if (ret)
-		goto map_error;
+	save_tre_wp = buf_ring->wp;
+	save_buf_wp = tre_ring->wp;
 
-	mhi_tre = tre_ring->wp;
-	mhi_tre->ptr = MHI_TRE_DATA_PTR(buf_info->p_addr);
-	mhi_tre->dword[0] = MHI_TRE_DATA_DWORD0(buf_info->len);
-	mhi_tre->dword[1] = MHI_TRE_DATA_DWORD1(1, 1, 0, 0);
+	for (i = 0; i < nseg; i++) {
+		last = (i == nseg - 1);
+		buf_info = buf_ring->wp;
+		if (i == 0) {
+			buf_info->len = skb->len - skb->data_len;
+			buf_info->v_addr = skb->data;
+		} else {
+			buf_info->len =
+				skb_frag_size(&skb_shinfo(skb)->frags[i - 1]);
+			buf_info->v_addr =
+				skb_frag_address(&skb_shinfo(skb)->frags[i - 1]);
+		}
+		if (last)
+			buf_info->cb_buf = skb;
+		else
+			buf_info->cb_buf = NULL;
+		buf_info->wp = tre_ring->wp;
+		buf_info->dir = mhi_chan->dir;
+		if (assert_wake && last)
+			buf_info->wake_put = true;
+		else
+			buf_info->wake_put = false;
+		buf_info->dma_flag = false;
+		buf_info->buf_type_skb = true;
+		ret = mhi_cntrl->map_single(mhi_cntrl, buf_info);
+		if (ret)
+			goto map_error;
 
-	MHI_VERB("chan:%d WP:0x%llx TRE:0x%llx 0x%08x 0x%08x\n", mhi_chan->chan,
-		 (u64)mhi_to_physical(tre_ring, mhi_tre), mhi_tre->ptr,
-		 mhi_tre->dword[0], mhi_tre->dword[1]);
+		mhi_tre = tre_ring->wp;
+		mhi_tre->ptr = MHI_TRE_DATA_PTR(buf_info->p_addr);
+		mhi_tre->dword[0] = MHI_TRE_DATA_DWORD0(buf_info->len);
+		if (last)
+			/* bei, eot */
+			mhi_tre->dword[1] = MHI_TRE_DATA_DWORD1(1, 1, 0, 0);
+		else
+			/* bei, chain */
+			mhi_tre->dword[1] = MHI_TRE_DATA_DWORD1(1, 0, 0, 1);
 
-	/* increment WP */
-	mhi_add_ring_element(mhi_cntrl, tre_ring);
-	mhi_add_ring_element(mhi_cntrl, buf_ring);
+		MHI_VERB("chan:%d WP:0x%llx TRE:0x%llx 0x%08x 0x%08x\n",
+			mhi_chan->chan,
+			(u64)mhi_to_physical(tre_ring, mhi_tre), mhi_tre->ptr,
+			mhi_tre->dword[0], mhi_tre->dword[1]);
 
+		/* increment WP */
+		mhi_add_ring_element(mhi_cntrl, tre_ring);
+		mhi_add_ring_element(mhi_cntrl, buf_ring);
+	}
 	if (likely(MHI_DB_ACCESS_VALID(mhi_cntrl->pm_state))) {
 		read_lock_bh(&mhi_chan->lock);
 		mhi_ring_chan_db(mhi_cntrl, mhi_chan);
@@ -451,6 +479,8 @@ int mhi_queue_skb(struct mhi_device *mhi_dev,
 	return 0;
 
 map_error:
+	buf_ring->wp = save_tre_wp;
+	tre_ring->wp = save_buf_wp;
 	if (assert_wake)
 		mhi_cntrl->wake_put(mhi_cntrl, false);
 	read_unlock_bh(&mhi_cntrl->pm_lock);
@@ -972,7 +1002,8 @@ static int parse_xfer_event(struct mhi_controller *mhi_cntrl,
 			local_rp = tre_ring->rp;
 
 			/* notify client */
-			mhi_chan->xfer_cb(mhi_chan->mhi_dev, &result);
+			if (buf_info->cb_buf)
+				mhi_chan->xfer_cb(mhi_chan->mhi_dev, &result);
 
 			if (mhi_chan->dir == DMA_TO_DEVICE &&
 				wake_put) {

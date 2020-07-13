@@ -90,7 +90,7 @@ static inline int fsm_dp_mhi_n_tx(struct fsm_dp_mhi *mhi,
 
 static inline bool fsm_dp_mhi_is_ready(struct fsm_dp_mhi *mhi)
 {
-	return ((mhi->mhi_dev) ? true : false);
+	return (((mhi->mhi_dev) && !(mhi->mhi_destroyed)) ? true : false);
 }
 
 #endif /* __FSM_DP_MHI_H__ */

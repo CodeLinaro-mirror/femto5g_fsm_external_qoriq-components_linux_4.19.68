@@ -639,6 +639,8 @@ int fsm_dp_tx_skb(
 		return -EINVAL;
 	if (skb_headroom(skb) < sizeof(*msghdr))
 		return -ENOMEM;
+	if (!fsm_dp_mhi_is_ready(&preg->pdrv->mhi))
+		return -EIO;
 	plen = skb->len;
 	skb_push(skb, sizeof(*msghdr));
 	msghdr = (struct fsm_dp_msghdr *)skb->data;

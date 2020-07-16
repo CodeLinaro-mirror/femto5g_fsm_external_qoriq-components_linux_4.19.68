@@ -4,6 +4,8 @@
  *
  * Copyright (C) Linaro 2012
  * Author: <benjamin.gaignard@linaro.org> for ST-Ericsson.
+ *
+ * Copyright (c) 2016-2020, The Linux Foundation. All rights reserved.
  */
 
 #include <linux/device.h>
@@ -23,6 +25,11 @@ struct ion_cma_heap {
 
 #define to_cma_heap(x) container_of(x, struct ion_cma_heap, heap)
 
+static bool ion_heap_is_cma_heap_type(enum ion_heap_type type)
+{
+	return type == ION_HEAP_TYPE_DMA;
+}
+
 /* ION CMA heap operations functions */
 static int ion_cma_allocate(struct ion_heap *heap, struct ion_buffer *buffer,
 			    unsigned long len,
@@ -36,6 +43,13 @@ static int ion_cma_allocate(struct ion_heap *heap, struct ion_buffer *buffer,
 	unsigned long align = get_order(size);
 	int ret;
 
+	if (ion_heap_is_cma_heap_type(buffer->heap->type) &&
+	    is_secure_allocation(buffer->flags)) {
+		pr_err("%s: CMA heap doesn't support secure allocations\n",
+		       __func__);
+		return -EINVAL;
+	}
+
 	if (align > CONFIG_CMA_ALIGNMENT)
 		align = CONFIG_CMA_ALIGNMENT;
 
@@ -43,21 +57,31 @@ static int ion_cma_allocate(struct ion_heap *heap, struct ion_buffer *buffer,
 	if (!pages)
 		return -ENOMEM;
 
-	if (PageHighMem(pages)) {
-		unsigned long nr_clear_pages = nr_pages;
-		struct page *page = pages;
+	if (hlos_accessible_buffer(buffer)) {
+		if (PageHighMem(pages)) {
+			unsigned long nr_clear_pages = nr_pages;
+			struct page *page = pages;
 
-		while (nr_clear_pages > 0) {
-			void *vaddr = kmap_atomic(page);
+			while (nr_clear_pages > 0) {
+				void *vaddr = kmap_atomic(page);
 
-			memset(vaddr, 0, PAGE_SIZE);
-			kunmap_atomic(vaddr);
-			page++;
-			nr_clear_pages--;
+				memset(vaddr, 0, PAGE_SIZE);
+				kunmap_atomic(vaddr);
+				page++;
+				nr_clear_pages--;
+			}
+		} else {
+			memset(page_address(pages), 0, size);
 		}
 	} else {
 		memset(page_address(pages), 0, size);
 	}
+
+	if (MAKE_ION_ALLOC_DMA_READY ||
+	    (!hlos_accessible_buffer(buffer)) ||
+	     (!ion_buffer_cached(buffer)))
+		ion_pages_sync_for_device(dev, pages, size,
+					  DMA_BIDIRECTIONAL);
 
 	table = kmalloc(sizeof(*table), GFP_KERNEL);
 	if (!table)

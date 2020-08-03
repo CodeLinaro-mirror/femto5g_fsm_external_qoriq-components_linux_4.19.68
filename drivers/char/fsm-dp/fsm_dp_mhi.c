@@ -153,10 +153,14 @@ static void __mhi_ul_skb_xfer_cmplt(struct sk_buff *skb)
 {
 	struct fsm_dp_msghdr *msghdr;
 	struct fsm_dp_kernel_register_db_entry *preg;
+	struct sk_buff *fskb;
 
 	msghdr = (struct fsm_dp_msghdr *)skb->data;
 	preg = fsm_dp_find_reg_db_type(msghdr->type);
 	if (!preg || !preg->tx_cmplt_cb) {
+		fskb = skb_shinfo(skb)->frag_list;
+		if (fskb)
+			kfree_skb_list(fskb);
 		kfree_skb(skb);
 		return;
 	}

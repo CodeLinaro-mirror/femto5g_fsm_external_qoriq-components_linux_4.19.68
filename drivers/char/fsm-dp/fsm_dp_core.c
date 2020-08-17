@@ -415,11 +415,16 @@ void fsm_dp_rx(struct fsm_dp_drv *pdrv, void *addr, unsigned int length)
 	unsigned int offset;
 	unsigned int cl;
 	struct fsm_dp_kernel_register_db_entry *preg;
+	ktime_t start;
+	struct fsm_dp_buf_cntrl *pf;
 
 	if (unlikely(pdrv == NULL || addr == NULL || !length)) {
 		FSM_DP_ERROR("%s: invalid argument\n", __func__);
 		return;
 	}
+
+	pf = addr - FSM_DP_L1_CACHE_BYTES;
+	start = fsm_dp_traffic_ts_begin();
 
 	mempool = fsm_dp_find_mempool(pdrv, addr, false, &cl);
 	if (mempool == NULL) {
@@ -482,6 +487,9 @@ void fsm_dp_rx(struct fsm_dp_drv *pdrv, void *addr, unsigned int length)
 			FSM_DP_BUF_STATE_KERNEL_RECVCMP_MSGQ_TO_APP);
 #endif
 	offset = fsm_dp_get_mem_offset(addr, &mempool->mem.loc, cl);
+
+	fsm_dp_traffic_ts_ul_end_and_collect(&pdrv->traffic, pf, start);
+
 	if (fsm_dp_ring_write(&rxq->ring, offset, 0)) {
 		FSM_DP_ERROR("%s: failed to enqueue rx packet\n", __func__);
 		goto free_rxbuf;

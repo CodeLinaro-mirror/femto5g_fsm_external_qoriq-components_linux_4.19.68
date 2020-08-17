@@ -221,20 +221,18 @@ static void __mhi_ul_xfer_cb(
 		break;
 	default:
 		{
-#ifdef FSM_DP_BUFFER_FENCING
-			struct fsm_dp_buf_cntrl *p;
 			unsigned long cl_off;
+			struct fsm_dp_buf_cntrl *p;
 
 			cl_off = (char *) addr -
 				mempool->mem.loc.cluster_kernel_addr[cl];
 			cl_off = cl_off % fsm_dp_buf_true_size(&mempool->mem);
 			p = (struct fsm_dp_buf_cntrl *) (addr - cl_off);
-			if (p->state == FSM_DP_BUF_STATE_KERNEL_XMIT_DMA)
-				p->state =
-					FSM_DP_BUF_STATE_KERNEL_XMIT_DMA_COMP;
+			fsm_dp_collect_ts_dl_traffic_window(&drv->traffic, p);
+			if (p->state != FSM_DP_BUF_STATE_KERNEL_XMIT_DMA)
+				p->state = FSM_DP_BUF_STATE_KERNEL_XMIT_DMA_COMP;
 			p->xmit_status = FSM_DP_XMIT_OK;
 			wmb(); /* make it visible to other CPU */
-#endif
 		}
 		break;
 	}

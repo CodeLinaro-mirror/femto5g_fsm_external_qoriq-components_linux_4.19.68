@@ -1744,7 +1744,7 @@ void mhi_reset_chan(struct mhi_controller *mhi_cntrl, struct mhi_chan *mhi_chan)
 
 		if (mhi_chan->pre_alloc) {
 			kfree(buf_info->cb_buf);
-		} else {
+		} else if (buf_info->cb_buf) {
 			result.buf_addr = buf_info->cb_buf;
 			result.buf_indirect = buf_info->buf_type_skb;
 			mhi_chan->xfer_cb(mhi_chan->mhi_dev, &result);

@@ -178,7 +178,11 @@ static void __mhi_ul_xfer_cb(
 		     __func__, result->buf_addr, result->dir,
 		     result->bytes_xferd, result->transaction_status);
 
-
+	if (!result->buf_addr) {
+		FSM_DP_ERROR("%s: reuslt buffer addr NULL, dir=%u bytes=%lu status=%d\n",
+		__func__, result->dir, result->bytes_xferd, result->transaction_status);
+		return;
+	}
 
 	if (result->buf_indirect) {
 		__mhi_ul_skb_xfer_cmplt((struct sk_buff *) addr);

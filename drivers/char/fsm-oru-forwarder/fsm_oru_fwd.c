@@ -608,9 +608,9 @@ static int _fsm_oru_fwd_enable(void)
 
 	netdev = dev_get_by_name(&init_net, fsm_oru_fwd_netdev_name);
 	if (!netdev) {
-		pr_err("%s: can not get device %s\n", __func__,
+		pr_warn("%s: can not get device %s\n", __func__,
 					fsm_oru_fwd_netdev_name);
-		return -ENODEV;
+		return 0;
 	}
 	fsm_oru_forwarder_netdev = netdev;
 	fsm_oru_fwd_pt.dev = netdev;
@@ -1456,6 +1456,8 @@ static int _fsm_oru_fwd_init(void)
 	_fsm_oru_fwd_init_time_measurement();
 
 	ret = fsm_oru_fwd_netdev_init();
+	if (ret)
+		goto out;
 
 	ret = fsm_oru_fwd_debugfs_init();
 	if (!ret)

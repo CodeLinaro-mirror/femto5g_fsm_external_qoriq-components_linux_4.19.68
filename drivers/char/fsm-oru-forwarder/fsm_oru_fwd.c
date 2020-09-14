@@ -61,6 +61,8 @@ static unsigned char fsm_oru_fwd_target_eth[ETH_ALEN] = {
 static bool fsm_oru_fwd_has_target_eth;
 static bool fsm_oru_fwd_has_target_ip;
 static unsigned int _fwd_cycles_per_ms;
+static unsigned int _fwd_cycles_per_call;
+static unsigned int _fwd_cycles_per_ktime_get;
 
 static bool fsm_oru_fwd_enable;
 static char fsm_oru_fwd_netdev_name[FSM_ORU_FWD_MAX_STR_LEN] = "eth1";
@@ -114,7 +116,6 @@ struct ofwd_netdev_priv {
 struct ofwd_netdev_priv *ofwd_netdev_priv;
 
 #undef FSM_ORU_FWD_TEST
-#undef FSM_ORU_FWD_MEASURE_CYCLE
 
 #define MEM_DUMP_COL_WIDTH 16
 #define MAX_MEM_DUMP_SIZE 256
@@ -146,10 +147,30 @@ static u64 _fwd_free_ul_buf;
 static u64 _fwd_loopback_cnt;
 static u64 _fwd_netdev_other_cnt;
 
-#ifdef FSM_ORU_FWD_MEASURE_CYCLE
-static u64 _fwd_ul_cycles;
+static unsigned int _fwd_dl_cycles_pkt_cnt;
+static unsigned int _fwd_ul_cycles_pkt_cnt;
 static u64 _fwd_dl_cycles;
-#endif
+static u64 _fwd_ul_cycles;
+
+static int fwd_ul_traffic_index = -1;
+
+static bool fwd_ul_traffic_collect_done;
+static bool fwd_ul_traffic_collect;
+
+static int fwd_dl_traffic_index = -1;
+
+static bool fwd_dl_traffic_collect_done;
+static bool fwd_dl_traffic_collect;
+static bool _fwd_traffic_timestamp;
+
+struct fwd_time_stamp {
+	unsigned long arrival_cycle;
+	unsigned long complete_cycle;
+};
+
+#define FWD_TRAFFIC_ARRAY_SIZE 256
+static struct fwd_time_stamp fwd_ul_traffic[FWD_TRAFFIC_ARRAY_SIZE];
+static struct fwd_time_stamp fwd_dl_traffic[FWD_TRAFFIC_ARRAY_SIZE];
 
 static bool _fwd_loop_back; /* recv and loop back to net control */
 
@@ -162,12 +183,18 @@ static int _fsm_oru_forwarder_rcv(
 static int _fsm_oru_fwd_enable(void);
 static int _fsm_oru_fwd_disable(void);
 
+static inline unsigned long fwd_get_cycles(void)
+{
+	if (_fwd_traffic_timestamp)
+		return get_cycles();
+	else
+		return 0;
+}
+
 static int debugfs_fwd_status_show(struct seq_file *s, void *unused)
 {
-#ifdef FSM_ORU_FWD_MEASURE_CYCLE
 	unsigned int avg_dl;
 	unsigned int avg_ul;
-#endif
 
 	seq_printf(s, "FWD enabled:          %d\n", fsm_oru_fwd_enable);
 	seq_printf(s, "FWD type              %s\n",
@@ -186,19 +213,21 @@ static int debugfs_fwd_status_show(struct seq_file *s, void *unused)
 	seq_printf(s, "FWD Free UL buffers:  %llu\n", _fwd_free_ul_buf);
 	seq_printf(s, "FWD loopback CNT:     %llu\n", _fwd_loopback_cnt);
 	seq_printf(s, "FWD netdev other CNT: %llu\n", _fwd_netdev_other_cnt);
-#ifdef FSM_ORU_FWD_MEASURE_CYCLE
 	seq_printf(s, "System Cycles per ms  %u\n", _fwd_cycles_per_ms);
-	avg_ul = (_fwd_ul_cycles * 10000 / _fwd_rx_from_device_cnt) /
-							_fwd_cycles_per_ms;
-	avg_dl = (_fwd_dl_cycles * 10000 / _fwd_rx_from_device_cnt) /
-							_fwd_cycles_per_ms;
-	if (_fwd_from_net_cnt)
+	if (_fwd_ul_cycles_pkt_cnt) {
+		avg_ul = (_fwd_ul_cycles * 10000 /
+				_fwd_ul_cycles_pkt_cnt) /
+					_fwd_cycles_per_ms;
 		seq_printf(s, "Avg UL Fwd us    %4u.%1u\n",
 						avg_ul / 10, avg_ul % 10);
-	if (_fwd_from_net_cnt)
+	}
+	if (_fwd_dl_cycles_pkt_cnt) {
+		avg_dl = (_fwd_dl_cycles * 10000 /
+				_fwd_dl_cycles_pkt_cnt) /
+					_fwd_cycles_per_ms;
 		seq_printf(s, "Avg DL Fwd us    %4u.%1u\n",
 						avg_dl / 10, avg_dl % 10);
-#endif
+	}
 	return 0;
 }
 DEFINE_DEBUGFS_OPS(debugfs_fwd_status, debugfs_fwd_status_show, NULL);
@@ -250,6 +279,282 @@ DEFINE_DEBUGFS_OPS(
 	debugfs_fwd_loopback_set
 );
 
+static ssize_t debugfs_fwd_traffic_ul_set(
+	struct file *s,
+	const char __user *buf,
+	size_t count,
+	loff_t *ppos
+)
+{
+	unsigned int enable = 0;
+
+	if (kstrtouint_from_user(buf, count, 0, &enable))
+		return -EFAULT;
+	if (enable && _fwd_traffic_timestamp) {
+		fwd_ul_traffic_index = -1;
+		fwd_ul_traffic_collect_done = false;
+		fwd_ul_traffic_collect = true;
+	} else {
+		fwd_ul_traffic_collect = false;
+	}
+	return count;
+}
+
+static unsigned long fwd_gap_array[FWD_TRAFFIC_ARRAY_SIZE];
+static int debugfs_fwd_traffic_ul_get(struct seq_file *s, void *unused)
+{
+	unsigned long max_gap = 0;
+	unsigned long min_gap = 0xffffffff;
+	unsigned long total_gap = 0;
+	unsigned long gap;
+
+	unsigned long max_service = 0;
+	unsigned long min_service = 0xffffffff;
+	unsigned long total_service = 0;
+	unsigned long service;
+	int i;
+	unsigned int dist[5];
+
+	seq_printf(s, "UL collect done:       %d\n\n",
+					fwd_ul_traffic_collect_done);
+	if (!fwd_ul_traffic_collect_done)
+		return 0;
+
+	for (i = 0; i < FWD_TRAFFIC_ARRAY_SIZE; i++) {
+		service = fwd_ul_traffic[i].complete_cycle -
+				fwd_ul_traffic[i].arrival_cycle;
+		if (service >= max_service)
+			max_service = service;
+		if (service <= min_service)
+			min_service = service;
+		total_service += service;
+	}
+	seq_printf(s, "UL max serive time:  %ld us\n",
+			(max_service * 1000) / _fwd_cycles_per_ms);
+	seq_printf(s, "UL min service time: %ld us\n",
+			(min_service * 1000) / _fwd_cycles_per_ms);
+	seq_printf(s, "UL avg service time: %ld us\n",
+			(total_service * 1000) / (_fwd_cycles_per_ms *
+					FWD_TRAFFIC_ARRAY_SIZE));
+
+	dist[0] = dist[1] = dist[2] = dist[3] = dist[4] = 0;
+	for (i = 1; i < FWD_TRAFFIC_ARRAY_SIZE; i++) {
+		gap = fwd_ul_traffic[i].arrival_cycle -
+			fwd_ul_traffic[i - 1].arrival_cycle;
+		fwd_gap_array[i - 1] = gap;
+		if (gap >= max_gap)
+			max_gap = gap;
+		if (gap <= min_gap)
+			min_gap = gap;
+		total_gap += gap;
+		if ((gap * 10) >= _fwd_cycles_per_ms)
+			dist[4]++;
+		else if ((gap * 200) < _fwd_cycles_per_ms)
+			dist[0]++;
+		else if ((gap * 100) < _fwd_cycles_per_ms)
+			dist[1]++;
+		else if ((gap * 50) < _fwd_cycles_per_ms)
+			dist[2]++;
+		else
+			dist[3]++;
+	}
+	seq_printf(s, "UL max gap:       %ld us\n",
+			(max_gap * 1000)/_fwd_cycles_per_ms);
+	seq_printf(s, "UL min gap:       %ld us\n",
+			(min_gap * 1000)/_fwd_cycles_per_ms);
+	seq_printf(s, "UL avg gap:       %ld us\n",
+			(total_gap * 1000) / (_fwd_cycles_per_ms *
+					(FWD_TRAFFIC_ARRAY_SIZE - 1)));
+
+	seq_printf(s, "UL dist: < 5 us %d , < 10 us %d, < 20 us %d, < 100 us %d, > 100 us %d\n",
+			dist[0], dist[1], dist[2], dist[3], dist[4]);
+
+	for (i = 0; i < (FWD_TRAFFIC_ARRAY_SIZE / 8) - 1; i++) {
+		pr_info("gap %ld %ld %ld %ld %ld %ld %ld %ld\n",
+			fwd_gap_array[i * 8], fwd_gap_array[i * 8 + 1],
+			fwd_gap_array[i * 8 + 2], fwd_gap_array[i * 8 + 3],
+			fwd_gap_array[i * 8 + 4], fwd_gap_array[i * 8 + 5],
+			fwd_gap_array[i * 8 + 6], fwd_gap_array[i * 8 + 7]);
+	}
+	i = (FWD_TRAFFIC_ARRAY_SIZE / 8) - 1;
+	pr_info("gap %ld %ld %ld %ld %ld %ld %ld\n",
+			fwd_gap_array[i * 8], fwd_gap_array[i * 8 + 1],
+			fwd_gap_array[i * 8 + 2], fwd_gap_array[i * 8 + 3],
+			fwd_gap_array[i * 8 + 4], fwd_gap_array[i * 8 + 5],
+			fwd_gap_array[i * 8 + 6]);
+	return 0;
+}
+DEFINE_DEBUGFS_OPS(
+	debugfs_fwd_traffic_ul,
+	debugfs_fwd_traffic_ul_get,
+	debugfs_fwd_traffic_ul_set);
+
+
+static ssize_t debugfs_fwd_traffic_dl_set(
+	struct file *s,
+	const char __user *buf,
+	size_t count,
+	loff_t *ppos
+)
+{
+	unsigned int enable = 0;
+
+	if (kstrtouint_from_user(buf, count, 0, &enable))
+		return -EFAULT;
+	if (enable && _fwd_traffic_timestamp) {
+		fwd_dl_traffic_index = -1;
+		fwd_dl_traffic_collect_done = false;
+		fwd_dl_traffic_collect = true;
+	} else {
+		fwd_dl_traffic_collect = false;
+	}
+	return count;
+}
+
+static int debugfs_fwd_traffic_dl_get(struct seq_file *s, void *unused)
+{
+	unsigned long max_gap = 0;
+	unsigned long min_gap = 0xffffffff;
+	unsigned long total_gap = 0;
+	unsigned long gap;
+
+	unsigned long max_service = 0;
+	unsigned long min_service = 0xffffffff;
+	unsigned long total_service = 0;
+	unsigned long service;
+	int i;
+	unsigned int dist[5];
+
+	seq_printf(s, "DL collect done:       %d\n\n",
+					fwd_dl_traffic_collect_done);
+	if (!fwd_dl_traffic_collect_done)
+		return 0;
+
+	for (i = 0; i < FWD_TRAFFIC_ARRAY_SIZE; i++) {
+		service = fwd_dl_traffic[i].complete_cycle -
+				fwd_dl_traffic[i].arrival_cycle;
+		if (service >= max_service)
+			max_service = service;
+		if (service <= min_service)
+			min_service = service;
+		total_service += service;
+	}
+	seq_printf(s, "DL max serive time:  %ld us\n",
+			(max_service * 1000) / _fwd_cycles_per_ms);
+	seq_printf(s, "DL min service time: %ld us\n",
+			(min_service * 1000) / _fwd_cycles_per_ms);
+	seq_printf(s, "DL avg service time: %ld us\n",
+			(total_service * 1000) / (_fwd_cycles_per_ms *
+					FWD_TRAFFIC_ARRAY_SIZE));
+
+	dist[0] = dist[1] = dist[2] = dist[3] = dist[4] = 0;
+	for (i = 1; i < FWD_TRAFFIC_ARRAY_SIZE; i++) {
+		gap = fwd_dl_traffic[i].arrival_cycle -
+			fwd_dl_traffic[i - 1].arrival_cycle;
+		fwd_gap_array[i - 1] = gap;
+		if (gap >= max_gap)
+			max_gap = gap;
+		if (gap <= min_gap)
+			min_gap = gap;
+		total_gap += gap;
+		if ((gap * 10) >= _fwd_cycles_per_ms)
+			dist[4]++;
+		else if ((gap * 200) < _fwd_cycles_per_ms)
+			dist[0]++;
+		else if ((gap * 100) < _fwd_cycles_per_ms)
+			dist[1]++;
+		else if ((gap * 50) < _fwd_cycles_per_ms)
+			dist[2]++;
+		else
+			dist[3]++;
+	}
+	seq_printf(s, "DL max gap:       %ld us\n",
+			(max_gap * 1000)/_fwd_cycles_per_ms);
+	seq_printf(s, "DL min gap:       %ld us\n",
+			(min_gap * 1000)/_fwd_cycles_per_ms);
+	seq_printf(s, "DL avg gap:       %ld us\n",
+			(total_gap * 1000) / (_fwd_cycles_per_ms *
+					(FWD_TRAFFIC_ARRAY_SIZE - 1)));
+
+	seq_printf(s, "DL dist: < 5 us %d , < 10 us %d, < 20 us %d, < 100 us %d, > 100 us %d\n",
+			dist[0], dist[1], dist[2], dist[3], dist[4]);
+
+	for (i = 0; i < (FWD_TRAFFIC_ARRAY_SIZE / 8) - 1; i++) {
+		pr_info("DL gap %ld %ld %ld %ld %ld %ld %ld %ld\n",
+			fwd_gap_array[i * 8], fwd_gap_array[i * 8 + 1],
+			fwd_gap_array[i * 8 + 2], fwd_gap_array[i * 8 + 3],
+			fwd_gap_array[i * 8 + 4], fwd_gap_array[i * 8 + 5],
+			fwd_gap_array[i * 8 + 6], fwd_gap_array[i * 8 + 7]);
+	}
+	i = (FWD_TRAFFIC_ARRAY_SIZE / 8) - 1;
+	pr_info("DL gap %ld %ld %ld %ld %ld %ld %ld\n",
+			fwd_gap_array[i * 8], fwd_gap_array[i * 8 + 1],
+			fwd_gap_array[i * 8 + 2], fwd_gap_array[i * 8 + 3],
+			fwd_gap_array[i * 8 + 4], fwd_gap_array[i * 8 + 5],
+			fwd_gap_array[i * 8 + 6]);
+	return 0;
+}
+DEFINE_DEBUGFS_OPS(
+	debugfs_fwd_traffic_dl,
+	debugfs_fwd_traffic_dl_get,
+	debugfs_fwd_traffic_dl_set);
+
+
+static int debugfs_fwd_traffic_timestamp_get(struct seq_file *s, void *unused)
+{
+
+	seq_printf(s, "FWD traffic timtstamp:       %d\n",
+					_fwd_traffic_timestamp);
+	return 0;
+}
+
+static ssize_t debugfs_fwd_traffic_timestamp_set(
+	struct file *s,
+	const char __user *buf,
+	size_t count,
+	loff_t *ppos
+)
+{
+	unsigned int enable = 0;
+
+	if (kstrtouint_from_user(buf, count, 0, &enable))
+		return -EFAULT;
+	_fwd_traffic_timestamp = enable;
+	if (enable) {
+		_fwd_dl_cycles = 0;
+		_fwd_ul_cycles = 0;
+		_fwd_ul_cycles_pkt_cnt = 0;
+		_fwd_dl_cycles_pkt_cnt = 0;
+	}
+	return count;
+}
+DEFINE_DEBUGFS_OPS(
+	debugfs_fwd_traffic_timestamp,
+	debugfs_fwd_traffic_timestamp_get,
+	debugfs_fwd_traffic_timestamp_set);
+
+static int debugfs_create_traffic_dir(struct dentry *parent)
+{
+	struct dentry *entry = NULL, *dentry = NULL;
+
+	dentry = debugfs_create_dir("traffic", parent);
+	if (IS_ERR(dentry))
+		return -ENOMEM;
+	entry = debugfs_create_file("fwd_ul", 0444, dentry, NULL,
+		&debugfs_fwd_traffic_ul_ops);
+	if (!entry)
+		return -ENOMEM;
+	entry = debugfs_create_file("fwd_dl", 0444, dentry, NULL,
+		&debugfs_fwd_traffic_dl_ops);
+	if (!entry)
+		return -ENOMEM;
+	entry = debugfs_create_file("time_stamp", 0444, dentry, NULL,
+		&debugfs_fwd_traffic_timestamp_ops);
+	if (!entry)
+		return -ENOMEM;
+	return 0;
+}
+
 static int fsm_oru_fwd_debugfs_init(void)
 {
 	struct dentry *entry = NULL;
@@ -270,6 +575,8 @@ static int fsm_oru_fwd_debugfs_init(void)
 	entry = debugfs_create_file("loopback", 0444, __dent, NULL,
 		&debugfs_fwd_loopback_ops);
 	if (!entry)
+		goto err;
+	if (debugfs_create_traffic_dir(__dent))
 		goto err;
 	return 0;
 err:
@@ -585,17 +892,15 @@ static int _fsm_oru_forwarder_rcv(
 )
 {
 	struct ethhdr *hdr;
-#ifdef FSM_ORU_FWD_MEASURE_CYCLE
 	unsigned long cycle_start;
-#endif
 
 	if (!skb) {
 		_fwd_drop++;
 		return NET_RX_DROP;
 	}
-#ifdef FSM_ORU_FWD_MEASURE_CYCLE
-	cycle_start = get_cycles();
-#endif
+	cycle_start = fwd_get_cycles();
+	skb->tstamp = cycle_start;
+
 	_fwd_from_net_cnt++;
 
 
@@ -616,15 +921,49 @@ static int _fsm_oru_forwarder_rcv(
 		return NET_RX_DROP;
 	}
 	_fwd_tx_cnt++;
-#ifdef FSM_ORU_FWD_MEASURE_CYCLE
-	_fwd_dl_cycles += (get_cycles() - cycle_start);
-#endif
+	_fwd_dl_cycles += (fwd_get_cycles() - cycle_start);
+	_fwd_dl_cycles_pkt_cnt++;
 	return  NET_RX_SUCCESS;
+}
+
+static inline void _fwd_dl_traffic_collect(struct sk_buff *skb)
+{
+	struct fwd_time_stamp *pts;
+
+	if (fwd_dl_traffic_collect) {
+		if (fwd_dl_traffic_index >= 0) {
+			pts = &fwd_dl_traffic[fwd_dl_traffic_index];
+			pts->arrival_cycle = skb->tstamp;
+			pts->complete_cycle = fwd_get_cycles();
+		}
+		if (++fwd_dl_traffic_index >= FWD_TRAFFIC_ARRAY_SIZE) {
+			fwd_dl_traffic_collect = false;
+			fwd_dl_traffic_collect_done = true;
+		}
+	}
+}
+
+static inline void _fwd_ul_traffic_collect(struct sk_buff *skb)
+{
+	struct fwd_time_stamp *pts;
+
+	if (fwd_ul_traffic_collect) {
+		if (fwd_ul_traffic_index >= 0) {
+			pts = &fwd_ul_traffic[fwd_ul_traffic_index];
+			pts->arrival_cycle = skb->tstamp;
+			pts->complete_cycle = fwd_get_cycles();
+		}
+		if (++fwd_ul_traffic_index >= FWD_TRAFFIC_ARRAY_SIZE) {
+			fwd_ul_traffic_collect = false;
+			fwd_ul_traffic_collect_done = true;
+		}
+	}
 }
 
 int fsm_dp_tx_cmplt_cb(struct sk_buff *skb)
 {
 
+	_fwd_dl_traffic_collect(skb);
 	kfree_skb(skb);
 	return 0;
 }
@@ -635,6 +974,7 @@ void fsm_oru_forwarder_skb_free(struct sk_buff *skb)
 
 	/* buf is now pointing to the receive buffer start of user data area */
 	buf = (char *) skb_uarg(skb);
+	_fwd_ul_traffic_collect(skb);
 	if (atomic_dec_and_test((atomic_t *)buf)) {
 		fsm_dp_rel_rx_buf(fsm_dp_rx_handle, buf);
 		_fwd_free_ul_buf++;
@@ -645,7 +985,8 @@ static int fsm_oru_fwd_send2_net(
 	struct page *page,
 	unsigned int page_offset,
 	char *orig_buf,
-	unsigned int length
+	unsigned int length,
+	unsigned long cycle_start
 )
 {
 	int rc = 0;
@@ -675,6 +1016,7 @@ static int fsm_oru_fwd_send2_net(
 		return -ENOMEM;
 	}
 	skb->dev = fsm_oru_forwarder_netdev;
+	skb->tstamp = cycle_start;
 
 	if (fsm_oru_use_ip) {
 		udphdr = skb_push(skb, sizeof(*udphdr));
@@ -778,14 +1120,10 @@ int fsm_oru_fwd_rx_ind_cb(
 	struct fsm_dp_aggrhdr *pa;
 	struct fsm_dp_aggriob *piob;
 	unsigned int plen;
-#ifdef FSM_ORU_FWD_MEASURE_CYCLE
 	unsigned long cycle_start;
-#endif
 
 	_fwd_rx_from_device_cnt++;
-#ifdef FSM_ORU_FWD_MEASURE_CYCLE
-	cycle_start = get_cycles();
-#endif
+	cycle_start = fwd_get_cycles();
 	/* did we acquire target ethernet address ? */
 	if (!fsm_oru_fwd_enable) {
 		_fwd_drop++;
@@ -836,15 +1174,14 @@ int fsm_oru_fwd_rx_ind_cb(
 			piob++, plen = piob->size, poff = piob->offset;
 		rc = fsm_oru_fwd_send2_net(
 			page, page_offset + poff,
-			orig_buf, plen);
+			orig_buf, plen, cycle_start);
 		if (rc)
 			goto err_rel;
 		else
 			good_sent++;
 	}
-#ifdef FSM_ORU_FWD_MEASURE_CYCLE
-	_fwd_ul_cycles += (get_cycles() - cycle_start);
-#endif
+	_fwd_ul_cycles += (fwd_get_cycles() - cycle_start);
+	_fwd_ul_cycles_pkt_cnt++;
 	return 0;
 err_rel:
 	for (i = 0; i < num_pkt - good_sent; i++)
@@ -902,10 +1239,9 @@ static netdev_tx_t oru_netdev_start_xmit(
 	uint16_t srcport;
 	__be32 src_addr;
 	struct neighbour *n;
+	unsigned long cycle_start;
 
-#ifdef FSM_ORU_FWD_MEASURE_CYCLE
-	cycle_start = get_cycles();
-#endif
+	cycle_start = fwd_get_cycles();
 	/* check traffic for IP forwarding */
 	if (!fsm_oru_use_ip)
 		goto other_traffic;
@@ -948,9 +1284,7 @@ static netdev_tx_t oru_netdev_start_xmit(
 		fsm_dp_tx_skb(fsm_dp_tx_handle, skb))
 		goto tx_err;
 	_fwd_tx_cnt++;
-#ifdef FSM_ORU_FWD_MEASURE_CYCLE
-	_fwd_dl_cycles += (get_cycles() - cycle_start);
-#endif
+	_fwd_dl_cycles += (fwd_get_cycles() - cycle_start);
 	return NETDEV_TX_OK;
 other_traffic:
 	_fwd_netdev_other_cnt++;
@@ -1039,6 +1373,39 @@ static int fsm_oru_fwd_netdev_init(void)
 	return 0;
 }
 
+static void _fsm_oru_fwd_init_time_measurement(void)
+{
+	unsigned long cycle_start;
+	ktime_t ktime_start;
+	ktime_t ns_per_get_cycles;
+	ktime_t ns_per_ktime;
+
+	cycle_start = get_cycles();
+	_fwd_cycles_per_call =  get_cycles() - cycle_start;
+
+	cycle_start = get_cycles();
+	ktime_get();
+	_fwd_cycles_per_ktime_get =  get_cycles() - cycle_start;
+
+	cycle_start = get_cycles();
+	udelay(1000);
+	_fwd_cycles_per_ms = get_cycles() - cycle_start;
+	pr_info("cycle per ms %d, per get_cycles call %d, per ktime_get %d\n",
+		_fwd_cycles_per_ms, _fwd_cycles_per_call,
+		_fwd_cycles_per_ktime_get);
+
+	ktime_start = ktime_get();
+	get_cycles();
+	ns_per_get_cycles = ktime_get() - ktime_start;
+
+	ktime_start = ktime_get();
+	ktime_get();
+	ns_per_ktime = ktime_get() - ktime_start;
+
+	pr_info("ns per ktime_get %lld, per get_cycles %lld\n",
+		ns_per_ktime, ns_per_get_cycles);
+}
+
 static void _fsm_oru_fwd_exit(void)
 {
 	_fsm_oru_fwd_cleanup();
@@ -1049,7 +1416,6 @@ static void _fsm_oru_fwd_exit(void)
 static int _fsm_oru_fwd_init(void)
 {
 	int ret = 0;
-	unsigned long cycle_start;
 
 	pr_info("ORU Forwarder loaded. dev %s oru_fwd_etype=%x\n",
 					fsm_oru_fwd_netdev_name, oru_fwd_etype);
@@ -1086,9 +1452,8 @@ static int _fsm_oru_fwd_init(void)
 	}
 	fsm_dp_rx_handle = fsm_dp_tx_handle;
 #endif
-	cycle_start = get_cycles();
-	udelay(1000);
-	_fwd_cycles_per_ms = get_cycles() - cycle_start;
+
+	_fsm_oru_fwd_init_time_measurement();
 
 	ret = fsm_oru_fwd_netdev_init();
 

@@ -1981,8 +1981,6 @@ static int fsm_oru_fwd_init(void)
 	int ret = 0;
 	struct workqueue_struct *wq;
 
-	pr_info("ORU Forwarder loaded. dev %s oru_fwd_etype=%x\n",
-			pfsm_forwarder->fwd_netdev_name, oru_fwd_etype);
 
 	pfsm_forwarder = kzalloc(sizeof(*pfsm_forwarder), GFP_KERNEL);
 	if (!pfsm_forwarder)
@@ -2049,10 +2047,12 @@ static int fsm_oru_fwd_init(void)
 	ret = fsm_oru_fwd_netdev_init();
 	if (ret)
 		goto out;
-
 	ret = fsm_oru_fwd_debugfs_init();
-	if (!ret)
+	if (!ret) {
+		pr_info("ORU Forwarder loaded. dev %s oru_fwd_etype=%x\n",
+			pfsm_forwarder->fwd_netdev_name, oru_fwd_etype);
 		return 0;
+	}
 out:
 	_fsm_oru_fwd_cleanup();
 	return ret;

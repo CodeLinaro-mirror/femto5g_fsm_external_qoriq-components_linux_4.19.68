@@ -1,4 +1,4 @@
-/* Copyright (c) 2020, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2020-2021, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -72,6 +72,9 @@ struct ecpri_common_header {
 
 #undef FSM_ORU_FWD_TEST
 
+#define FORWARDER_WORK_CPU 3
+#define FWD_STATS_MIN 99999
+
 /* statistics */
 struct fwd_statistics {
 	uint64_t fwd_from_net_cnt;
@@ -79,11 +82,27 @@ struct fwd_statistics {
 	uint64_t fwd_tx_err;
 	uint64_t fwd_rx_from_device_cnt;
 	uint64_t fwd_drop;
+	uint64_t xmit_queue_ovf_drop;
+	uint64_t delay_queue_ovf_drop;
 	uint64_t fwd_to_net_cnt;
 	uint64_t fwd_to_net_err;
 	uint64_t fwd_free_ul_buf;
 	uint64_t fwd_loopback_cnt;
 	uint64_t fwd_netdev_other_cnt;
+	int32_t  fwd_dl_max_u_pdu;
+	int32_t  fwd_dl_min_u_pdu;
+	int32_t  fwd_dl_max_u_concat;
+	int32_t  fwd_dl_min_u_concat;
+	int32_t  fwd_dl_max_c_pdu;
+	int32_t  fwd_dl_min_c_pdu;
+	int32_t  fwd_dl_max_c_concat;
+	int32_t  fwd_dl_min_c_concat;
+	uint64_t fwd_dl_c_ecpri_msg;
+	uint64_t fwd_dl_c_acc_concat;
+	uint64_t fwd_dl_c_acc_pdu;
+	uint64_t fwd_dl_u_ecpri_msg;
+	uint64_t fwd_dl_u_acc_concat;
+	uint64_t fwd_dl_u_acc_pdu;
 };
 
 struct fwd_time_stamp {
@@ -91,9 +110,17 @@ struct fwd_time_stamp {
 	uint64_t complete_cycle;
 };
 
+
 #define FWD_TRAFFIC_ARRAY_SIZE 256
 
-#define FSM_QUEUE_MAX  FSM_DP_MAX_SG_IOV_SIZE
+#define FSM_ORU_DELAY_LOCKQ_SIZE (2048)
+
+#define FSM_ORU_U_DELAY_LOCKQ_ID 0xcafec0f0
+#define FSM_ORU_C_DELAY_LOCKQ_ID 0xcafec0f1
+
+#define FSM_ORU_XMIT_LOCKQ_SIZE 1024
+#define FSM_ORU_U_XMIT_LOCKQ_ID 0xcafec1f0
+#define FSM_ORU_C_XMIT_LOCKQ_ID 0xcafec1f1
 
 struct fsm_oru_fwdr {
 
@@ -149,23 +176,21 @@ struct fsm_oru_fwdr {
 	bool fwd_dl_concat;
 	struct workqueue_struct *fsm_oru_wq;
 
-	spinlock_t fwd_uplane_lock;
 	struct hrtimer fsm_oru_concat_uplane_hrtimer;
 	struct work_struct fsm_oru_uplane_work;
-	uint32_t fwd_queue_uplane_index;
-	uint32_t fwd_queue_uplane_length;
-	uint32_t fwd_queue_uplane_seg;
-	uint64_t fwd_queue_uplane_1st_cycle;
-	struct sk_buff *skb_uplane_queue[FSM_QUEUE_MAX];
+	atomic_t ecpri_uplane_delay_cnt;
+	unsigned long uplane_1st_arrival_cycle;
 
-	spinlock_t fwd_cplane_lock;
+	void *ecpri_uplane_delay_ring;
+	void *ecpri_uplane_xmit_ring;
+
 	struct hrtimer fsm_oru_concat_cplane_hrtimer;
 	struct work_struct fsm_oru_cplane_work;
-	uint32_t fwd_queue_cplane_index;
-	uint32_t fwd_queue_cplane_length;
-	uint32_t fwd_queue_cplane_seg;
-	uint64_t fwd_queue_cplane_1st_cycle;
-	struct sk_buff *skb_cplane_queue[FSM_QUEUE_MAX];
+	atomic_t ecpri_cplane_delay_cnt;
+	unsigned long cplane_1st_arrival_cycle;
+
+	void *ecpri_cplane_delay_ring;
+	void *ecpri_cplane_xmit_ring;
 
 	uint32_t fwd_queue_max;
 	uint32_t fwd_dl_max_pdu_size;
@@ -174,6 +199,8 @@ struct fsm_oru_fwdr {
 	uint32_t fwd_dl_concat_uplane_max_delay;
 	uint32_t fwd_dl_concat_uplane_min_delay_cycle;
 	uint32_t fwd_dl_concat_uplane_max_delay_cycle;
+
+	bool need_special_schedule;
 
 	uint32_t fwd_dl_concat_cplane_min_delay;
 	uint32_t fwd_dl_concat_cplane_max_delay;

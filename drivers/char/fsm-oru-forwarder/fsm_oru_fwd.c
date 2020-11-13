@@ -1,4 +1,4 @@
-/* Copyright (c) 2020, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2020-2021, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -47,7 +47,6 @@ static struct netlink_kernel_cfg fsm_oru_fwd_netlink_cfg = {
 static struct net_device *oru_netdev;
 struct ofwd_netdev_priv *ofwd_netdev_priv;
 static struct net_device *fsm_oru_forwarder_netdev;
-static struct packet_type fsm_oru_fwd_pt;
 
 static unsigned int fwd_cycles_per_ms;
 static unsigned int fwd_cycles_per_call;
@@ -79,7 +78,15 @@ static int fsm_oru_forwarder_rcv(
 );
 static int fsm_oru_fwd_enable(void);
 static int fsm_oru_fwd_disable(void);
-static void fsm_queue_flush(unsigned long flags, int type);
+static void fsm_oru_flush_xmit_queue(unsigned int type);
+static bool fsm_oru_flush_delay_queue(unsigned int type);
+static void fsm_oru_delay_queue_cleanup(unsigned int type);
+static void fsm_oru_xmit_queue_cleanup(unsigned int type);
+
+static struct packet_type fsm_oru_fwd_pt  __read_mostly = {
+	.type		= htons(ECPRI_ETHER_TYPE),
+	.func		= fsm_oru_forwarder_rcv
+};
 
 static inline uint8_t get_ecrpi_rev(struct ecpri_common_header *hdr)
 {
@@ -97,6 +104,23 @@ static inline uint64_t fwd_get_cycles(void)
 		return get_cycles();
 	else
 		return 0;
+}
+
+static ssize_t debugfs_fwd_status_clear(
+	struct file *s,
+	const char __user *buf,
+	size_t count,
+	loff_t *ppos
+)
+{
+
+	memset(&pfsm_forwarder->fwd_stats, 0,  sizeof(struct fwd_statistics));
+	pfsm_forwarder->fwd_stats.fwd_dl_min_u_pdu = FWD_STATS_MIN;
+	pfsm_forwarder->fwd_stats.fwd_dl_min_u_concat = FWD_STATS_MIN;
+	pfsm_forwarder->fwd_stats.fwd_dl_min_c_pdu = FWD_STATS_MIN;
+	pfsm_forwarder->fwd_stats.fwd_dl_min_c_concat = FWD_STATS_MIN;
+
+	return count;
 }
 
 static int debugfs_fwd_status_show(struct seq_file *s, void *unused)
@@ -119,7 +143,11 @@ static int debugfs_fwd_status_show(struct seq_file *s, void *unused)
 			pfsm_forwarder->fwd_stats.fwd_tx_err);
 	seq_printf(s, "FWD_FROM_DEVICE:      %llu\n",
 			pfsm_forwarder->fwd_stats.fwd_rx_from_device_cnt);
-	seq_printf(s, "FWD_FROM_DEVICE_DROP: %llu\n",
+	seq_printf(s, "FWD_DROP-XMIT QUEUE Overflow: %llu\n",
+			pfsm_forwarder->fwd_stats.xmit_queue_ovf_drop);
+	seq_printf(s, "FWD_DROP-DELAY QUEUE Overflow: %llu\n",
+			pfsm_forwarder->fwd_stats.delay_queue_ovf_drop);
+	seq_printf(s, "FWD_DROP-Others:      %llu\n",
 			pfsm_forwarder->fwd_stats.fwd_drop);
 	seq_printf(s, "FWD_TO_NET_ERR:       %llu\n",
 			pfsm_forwarder->fwd_stats.fwd_to_net_err);
@@ -131,6 +159,46 @@ static int debugfs_fwd_status_show(struct seq_file *s, void *unused)
 			pfsm_forwarder->fwd_stats.fwd_loopback_cnt);
 	seq_printf(s, "FWD netdev other CNT: %llu\n",
 			pfsm_forwarder->fwd_stats.fwd_netdev_other_cnt);
+
+	seq_printf(s, "DL Uplane Max Concat: %u\n",
+			pfsm_forwarder->fwd_stats.fwd_dl_max_u_concat);
+	seq_printf(s, "DL Uplane Min Concat: %u\n",
+			pfsm_forwarder->fwd_stats.fwd_dl_min_u_concat);
+	if (pfsm_forwarder->fwd_stats.fwd_dl_u_ecpri_msg) {
+		seq_printf(s, "DL Uplane Avg Concat: %llu\n",
+			pfsm_forwarder->fwd_stats.fwd_dl_u_acc_concat /
+				pfsm_forwarder->fwd_stats.fwd_dl_u_ecpri_msg);
+	}
+
+	seq_printf(s, "DL Uplane Max PDU:    %u\n",
+			pfsm_forwarder->fwd_stats.fwd_dl_max_u_pdu);
+	seq_printf(s, "DL Uplane Min PDU:    %u\n",
+			pfsm_forwarder->fwd_stats.fwd_dl_min_u_pdu);
+	if (pfsm_forwarder->fwd_stats.fwd_dl_u_ecpri_msg) {
+		seq_printf(s, "DL Uplane Avg PDU:    %llu\n",
+			pfsm_forwarder->fwd_stats.fwd_dl_u_acc_pdu /
+				pfsm_forwarder->fwd_stats.fwd_dl_u_ecpri_msg);
+	}
+
+	seq_printf(s, "DL Cplane Max Concat: %u\n",
+			pfsm_forwarder->fwd_stats.fwd_dl_max_c_concat);
+	seq_printf(s, "DL Cplane Min Concat: %u\n",
+			pfsm_forwarder->fwd_stats.fwd_dl_min_c_concat);
+	if (pfsm_forwarder->fwd_stats.fwd_dl_c_ecpri_msg) {
+		seq_printf(s, "DL Cplane Avg Concat: %llu\n",
+			pfsm_forwarder->fwd_stats.fwd_dl_c_acc_concat /
+				pfsm_forwarder->fwd_stats.fwd_dl_c_ecpri_msg);
+	}
+	seq_printf(s, "DL Cplane Max PDU:    %u\n",
+			pfsm_forwarder->fwd_stats.fwd_dl_max_c_pdu);
+	seq_printf(s, "DL Cplane Min PDU:    %u\n",
+			pfsm_forwarder->fwd_stats.fwd_dl_min_c_pdu);
+	if (pfsm_forwarder->fwd_stats.fwd_dl_c_ecpri_msg) {
+		seq_printf(s, "DL Cplane Avg PDU:    %llu\n",
+			pfsm_forwarder->fwd_stats.fwd_dl_c_acc_pdu /
+				pfsm_forwarder->fwd_stats.fwd_dl_c_ecpri_msg);
+	}
+
 	seq_printf(s, "System Cycles per ms  %u\n", fwd_cycles_per_ms);
 	if (pfsm_forwarder->fwd_ul_cycles_pkt_cnt) {
 		avg_ul = (pfsm_forwarder->fwd_ul_cycles * 10000 /
@@ -148,7 +216,14 @@ static int debugfs_fwd_status_show(struct seq_file *s, void *unused)
 	}
 	return 0;
 }
-DEFINE_DEBUGFS_OPS(debugfs_fwd_status, debugfs_fwd_status_show, NULL);
+DEFINE_DEBUGFS_OPS(debugfs_fwd_status, debugfs_fwd_status_show,
+					debugfs_fwd_status_clear);
+
+static int debugfs_fwd_control_get(struct seq_file *s, void *unused)
+{
+	seq_printf(s, "Forwarder Enable: %d\n", pfsm_forwarder->fwd_enable);
+	return 0;
+}
 
 static ssize_t debugfs_fwd_control_set(
 	struct file *s,
@@ -167,7 +242,8 @@ static ssize_t debugfs_fwd_control_set(
 		fsm_oru_fwd_disable();
 	return count;
 }
-DEFINE_DEBUGFS_OPS(debugfs_fwd_control, NULL, debugfs_fwd_control_set);
+DEFINE_DEBUGFS_OPS(debugfs_fwd_control, debugfs_fwd_control_get,
+						debugfs_fwd_control_set);
 
 static int debugfs_fwd_loopback_get(struct seq_file *s, void *unused)
 {
@@ -473,33 +549,34 @@ static int debugfs_create_traffic_dir(struct dentry *parent)
 	return 0;
 }
 
-static int debugfs_fwd_concat_get(struct seq_file *s, void *unused)
+static int debugfs_fwd_concat_max_num_of_msg_get(struct seq_file *s,
+						void *unused)
 {
 	seq_printf(s, "max number of concatenated messages: %d\n",
 				pfsm_forwarder->fwd_queue_max);
 	return 0;
 }
 
-static ssize_t debugfs_fwd_concat_set(
+static ssize_t debugfs_fwd_concat_max_num_of_msg_set(
 	struct file *s,
 	const char __user *buf,
 	size_t count,
 	loff_t *ppos
 )
 {
-	unsigned int concat = 0;
+	unsigned int max_num_of_msg = 0;
 
-	if (kstrtouint_from_user(buf, count, 0, &concat))
+	if (kstrtouint_from_user(buf, count, 0, &max_num_of_msg))
 		return -EFAULT;
-	if (concat > FSM_QUEUE_MAX)
-		concat = FSM_QUEUE_MAX;
-	pfsm_forwarder->fwd_queue_max = concat;
+	if (max_num_of_msg > FSM_DP_MAX_SG_IOV_SIZE)
+		max_num_of_msg = FSM_DP_MAX_SG_IOV_SIZE;
+	pfsm_forwarder->fwd_queue_max = max_num_of_msg;
 	return count;
 }
 DEFINE_DEBUGFS_OPS(
-	debugfs_fwd_concat,
-	debugfs_fwd_concat_get,
-	debugfs_fwd_concat_set
+	debugfs_fwd_concat_max_num_of_msg,
+	debugfs_fwd_concat_max_num_of_msg_get,
+	debugfs_fwd_concat_max_num_of_msg_set
 );
 
 static int debugfs_fwd_dlmax_pdu_get(struct seq_file *s, void *unused)
@@ -516,13 +593,13 @@ static ssize_t debugfs_fwd_dlmax_pdu_set(
 	loff_t *ppos
 )
 {
-	unsigned int concat = 0;
+	unsigned int dlmax_pdu = 0;
 
-	if (kstrtouint_from_user(buf, count, 0, &concat))
+	if (kstrtouint_from_user(buf, count, 0, &dlmax_pdu))
 		return -EFAULT;
-	if (concat > FSM_ORU_MAX_ECPRI_PDU_SIZE)
-		concat = FSM_ORU_MAX_ECPRI_PDU_SIZE;
-	pfsm_forwarder->fwd_dl_max_pdu_size = concat;
+	if (dlmax_pdu > FSM_ORU_MAX_ECPRI_PDU_SIZE)
+		dlmax_pdu = FSM_ORU_MAX_ECPRI_PDU_SIZE;
+	pfsm_forwarder->fwd_dl_max_pdu_size = dlmax_pdu;
 	return count;
 }
 DEFINE_DEBUGFS_OPS(
@@ -579,13 +656,13 @@ static ssize_t debugfs_fwd_concat_min_set(
 	loff_t *ppos
 )
 {
-	unsigned int concat = 0;
+	unsigned int uplane_min_delay = 0;
 
-	if (kstrtouint_from_user(buf, count, 0, &concat))
+	if (kstrtouint_from_user(buf, count, 0, &uplane_min_delay))
 		return -EFAULT;
-	pfsm_forwarder->fwd_dl_concat_uplane_min_delay = concat;
+	pfsm_forwarder->fwd_dl_concat_uplane_min_delay = uplane_min_delay;
 	pfsm_forwarder->fwd_dl_concat_uplane_min_delay_cycle =
-		concat * fwd_cycles_per_ms / 1000;
+		uplane_min_delay * fwd_cycles_per_ms / 1000;
 	return count;
 }
 DEFINE_DEBUGFS_OPS(
@@ -612,13 +689,13 @@ static ssize_t debugfs_fwd_concat_cplane_max_set(
 )
 {
 
-	unsigned int concat = 0;
+	unsigned int cplane_max_delay = 0;
 
-	if (kstrtouint_from_user(buf, count, 0, &concat))
+	if (kstrtouint_from_user(buf, count, 0, &cplane_max_delay))
 		return -EFAULT;
-	pfsm_forwarder->fwd_dl_concat_cplane_max_delay = concat;
+	pfsm_forwarder->fwd_dl_concat_cplane_max_delay = cplane_max_delay;
 	pfsm_forwarder->fwd_dl_concat_cplane_max_delay_cycle =
-		concat * fwd_cycles_per_ms / 1000;
+		cplane_max_delay * fwd_cycles_per_ms / 1000;
 	return count;
 }
 DEFINE_DEBUGFS_OPS(
@@ -643,19 +720,46 @@ static ssize_t debugfs_fwd_concat_cplane_min_set(
 	loff_t *ppos
 )
 {
-	unsigned int concat = 0;
+	unsigned int cplane_min_delay = 0;
 
-	if (kstrtouint_from_user(buf, count, 0, &concat))
+	if (kstrtouint_from_user(buf, count, 0, &cplane_min_delay))
 		return -EFAULT;
-	pfsm_forwarder->fwd_dl_concat_cplane_min_delay = concat;
+	pfsm_forwarder->fwd_dl_concat_cplane_min_delay = cplane_min_delay;
 	pfsm_forwarder->fwd_dl_concat_cplane_min_delay_cycle =
-		concat * fwd_cycles_per_ms / 1000;
+		cplane_min_delay * fwd_cycles_per_ms / 1000;
 	return count;
 }
 DEFINE_DEBUGFS_OPS(
 	debugfs_fwd_concat_cplane_min,
 	debugfs_fwd_concat_cplane_min_get,
 	debugfs_fwd_concat_cplane_min_set
+);
+
+static int debugfs_fwd_concat_dl_get(struct seq_file *s, void *unused)
+{
+	seq_printf(s, "Forwarder DL concatenation:       %d\n",
+			pfsm_forwarder->fwd_dl_concat);
+	return 0;
+}
+
+static ssize_t debugfs_fwd_concat_dl_set(
+	struct file *s,
+	const char __user *buf,
+	size_t count,
+	loff_t *ppos
+)
+{
+	unsigned int dl_concat = 0;
+
+	if (kstrtouint_from_user(buf, count, 0, &dl_concat))
+		return -EFAULT;
+	pfsm_forwarder->fwd_dl_concat = dl_concat;
+	return count;
+}
+DEFINE_DEBUGFS_OPS(
+	debugfs_fwd_concat_dl,
+	debugfs_fwd_concat_dl_get,
+	debugfs_fwd_concat_dl_set
 );
 
 static int debugfs_create_concat_dir(struct dentry *parent)
@@ -667,7 +771,7 @@ static int debugfs_create_concat_dir(struct dentry *parent)
 		return -ENOMEM;
 
 	entry = debugfs_create_file("concat-max-msg", 0644, dentry, NULL,
-		&debugfs_fwd_concat_ops);
+		&debugfs_fwd_concat_max_num_of_msg_ops);
 	if (!entry)
 		return -ENOMEM;
 	entry = debugfs_create_file("concat-dl-max-pdu-size", 0644,
@@ -691,6 +795,10 @@ static int debugfs_create_concat_dir(struct dentry *parent)
 		dentry, NULL, &debugfs_fwd_concat_cplane_max_ops);
 	if (!entry)
 		return -ENOMEM;
+	entry = debugfs_create_file("concat_dl", 0644,
+		dentry, NULL, &debugfs_fwd_concat_dl_ops);
+	if (!entry)
+		return -ENOMEM;
 	return 0;
 }
 
@@ -703,7 +811,7 @@ static int fsm_oru_fwd_debugfs_init(void)
 	__dent = debugfs_create_dir(FSM_ORU_FWD_NAME, 0);
 	if (IS_ERR(__dent))
 		return -ENOMEM;
-	entry = debugfs_create_file("status", 0444, __dent, NULL,
+	entry = debugfs_create_file("status", 0644, __dent, NULL,
 		&debugfs_fwd_status_ops);
 	if (!entry)
 		goto err;
@@ -755,24 +863,7 @@ static int fsm_oru_fwd_enable(void)
 					pfsm_forwarder->fwd_netdev_name);
 		return 0;
 	}
-
-	pfsm_forwarder->fwd_queue_uplane_index = 0;
-	pfsm_forwarder->fwd_queue_uplane_length = 0;
-	pfsm_forwarder->fwd_queue_uplane_1st_cycle = 0;
-	pfsm_forwarder->fwd_queue_uplane_seg = 0;
-	memset(pfsm_forwarder->skb_uplane_queue, 0, sizeof(pfsm_forwarder->skb_uplane_queue));
-
-	pfsm_forwarder->fwd_queue_cplane_index = 0;
-	pfsm_forwarder->fwd_queue_cplane_length = 0;
-	pfsm_forwarder->fwd_queue_cplane_1st_cycle = 0;
-	pfsm_forwarder->fwd_queue_cplane_seg = 0;
-	memset(pfsm_forwarder->skb_cplane_queue, 0, sizeof(pfsm_forwarder->skb_cplane_queue));
-
 	fsm_oru_forwarder_netdev = netdev;
-	fsm_oru_fwd_pt.dev = netdev;
-	fsm_oru_fwd_pt.type = htons(oru_fwd_etype);
-	fsm_oru_fwd_pt.func = fsm_oru_forwarder_rcv;
-	dev_add_pack(&fsm_oru_fwd_pt);
 
 	pfsm_forwarder->fwd_has_target_eth = !(is_broadcast_ether_addr(
 						pfsm_forwarder->fwd_target_eth));
@@ -780,29 +871,304 @@ static int fsm_oru_fwd_enable(void)
 					(pfsm_forwarder->fwd_du_ip_addr == 0));
 	if (!pfsm_forwarder->fwd_has_target_ip && pfsm_forwarder->fwd_use_ip)
 		pfsm_forwarder->fwd_has_target_eth = false;
+
 	pfsm_forwarder->fwd_enable = true;
+	wmb(); /* make other cpu see */
+	udelay(1000);
 	return 0;
+}
+
+static void fsm_oru_delay_queue_cleanup(unsigned int type)
+{
+	void *delay_ring;
+	fsm_dp_ring_element_data_t ring_element;
+	unsigned int flag;
+	atomic_t *delay_cnt;
+
+	if (type == FSM_ORU_MSG_TYPE_UPLANE) {
+		delay_ring = pfsm_forwarder->ecpri_uplane_delay_ring;
+		delay_cnt = &pfsm_forwarder->ecpri_uplane_delay_cnt;
+	} else {
+		delay_ring = pfsm_forwarder->ecpri_cplane_delay_ring;
+		delay_cnt = &pfsm_forwarder->ecpri_cplane_delay_cnt;
+	}
+	while (true) {
+		if (fsm_dp_ex_ring_read(delay_ring, &ring_element, &flag))
+			break;
+		atomic_dec(delay_cnt);
+		kfree_skb((struct sk_buff *) (ring_element));
+	}
+}
+
+static void fsm_oru_xmit_queue_cleanup(unsigned int type)
+{
+	void *xmit_ring;
+	fsm_dp_ring_element_data_t ring_element;
+	unsigned int flag;
+
+	if (type == FSM_ORU_MSG_TYPE_UPLANE)
+		xmit_ring = pfsm_forwarder->ecpri_uplane_xmit_ring;
+	else
+		xmit_ring = pfsm_forwarder->ecpri_cplane_xmit_ring;
+	while (true) {
+		if (fsm_dp_ex_ring_read(xmit_ring, &ring_element, &flag))
+			break;
+		pfsm_forwarder->fwd_stats.fwd_drop++;
+		kfree_skb((struct sk_buff *) (ring_element));
+	}
+}
+
+static void fsm_oru_queue_flush_no_concat(unsigned int type)
+{
+	void *ring;
+	fsm_dp_ring_element_data_t ring_element;
+	unsigned int eflag;
+	struct sk_buff *skb;
+	atomic_t *delay_cnt;
+	int rc;
+
+	pfsm_forwarder->need_special_schedule = false;
+	/* ignore type, only work on uplane delay queue */
+	ring = pfsm_forwarder->ecpri_uplane_delay_ring;
+	delay_cnt = &pfsm_forwarder->ecpri_uplane_delay_cnt;
+	while (true) {
+		if (fsm_dp_ex_ring_read(ring, &ring_element, &eflag))
+			break;
+		atomic_dec(delay_cnt);
+		skb = (struct sk_buff *)ring_element;
+		pfsm_forwarder->fwd_stats.fwd_tx_cnt++;
+		rc = fsm_dp_tx_skb(pfsm_forwarder->fsm_dp_tx_handle, skb);
+		if (rc) {
+			pfsm_forwarder->fwd_stats.fwd_tx_err++;
+			kfree_skb(skb);
+			break;
+		}
+	}
+	pfsm_forwarder->need_special_schedule = true;
+	wmb(); /* make other cpu see */
+}
+
+#define FSM_ORU_XMIT_MAX_SKB FSM_DP_MAX_SG_IOV_SIZE
+
+static void concat_update_stats(unsigned int type,
+			unsigned int numskb, unsigned int plength)
+{
+	if (type == FSM_ORU_MSG_TYPE_UPLANE) {
+		if (numskb < pfsm_forwarder->fwd_stats.fwd_dl_min_u_concat)
+			pfsm_forwarder->fwd_stats.fwd_dl_min_u_concat = numskb;
+		if (numskb > pfsm_forwarder->fwd_stats.fwd_dl_max_u_concat)
+			pfsm_forwarder->fwd_stats.fwd_dl_max_u_concat = numskb;
+		if (plength < pfsm_forwarder->fwd_stats.fwd_dl_min_u_pdu)
+			pfsm_forwarder->fwd_stats.fwd_dl_min_u_pdu = plength;
+		if (plength > pfsm_forwarder->fwd_stats.fwd_dl_max_u_pdu)
+			pfsm_forwarder->fwd_stats.fwd_dl_max_u_pdu = plength;
+		pfsm_forwarder->fwd_stats.fwd_dl_u_ecpri_msg++;
+		pfsm_forwarder->fwd_stats.fwd_dl_u_acc_concat += numskb;
+		pfsm_forwarder->fwd_stats.fwd_dl_u_acc_pdu += plength;
+	} else {
+		if (numskb < pfsm_forwarder->fwd_stats.fwd_dl_min_c_concat)
+			pfsm_forwarder->fwd_stats.fwd_dl_min_c_concat = numskb;
+		if (numskb > pfsm_forwarder->fwd_stats.fwd_dl_max_c_concat)
+			pfsm_forwarder->fwd_stats.fwd_dl_max_c_concat = numskb;
+		if (plength < pfsm_forwarder->fwd_stats.fwd_dl_min_c_pdu)
+			pfsm_forwarder->fwd_stats.fwd_dl_min_c_pdu = plength;
+		if (plength > pfsm_forwarder->fwd_stats.fwd_dl_max_c_pdu)
+			pfsm_forwarder->fwd_stats.fwd_dl_max_c_pdu = plength;
+		pfsm_forwarder->fwd_stats.fwd_dl_c_ecpri_msg++;
+		pfsm_forwarder->fwd_stats.fwd_dl_c_acc_concat += numskb;
+		pfsm_forwarder->fwd_stats.fwd_dl_c_acc_pdu += plength;
+	}
+}
+
+static void fsm_oru_xmit_queue_concat(
+	unsigned int type)
+{
+	fsm_dp_ring_element_data_t ring_element;
+	unsigned int eflag;
+	struct sk_buff *skb_queue_sav[FSM_ORU_XMIT_MAX_SKB];
+	int rc;
+	struct sk_buff *tskb, *pskb, *fskb;
+	uint32_t plength, numseg;
+	int numskb, j;
+	struct ecpri_common_header *ecpri_hdr;
+	void *xmit_ring;
+
+	if (type == FSM_ORU_MSG_TYPE_UPLANE)
+		xmit_ring = pfsm_forwarder->ecpri_uplane_xmit_ring;
+	else
+		xmit_ring = pfsm_forwarder->ecpri_cplane_xmit_ring;
+
+
+	numskb =  0;
+	numseg = 0;
+	fskb = pskb = NULL;
+	plength = 0;
+	while (true) {
+again:
+		if (fsm_dp_ex_ring_read(xmit_ring, &ring_element, &eflag))
+			break;
+		tskb = (struct sk_buff *)ring_element;
+		/* if concat */
+		if (eflag) {
+			if (numskb) {
+				rc = fsm_dp_tx_skb(
+					pfsm_forwarder->fsm_dp_tx_handle,
+					fskb);
+				pfsm_forwarder->fwd_stats.fwd_tx_cnt++;
+				if (rc) {
+					for (j = 0; j < numskb; j++)
+						kfree_skb(skb_queue_sav[j]);
+					pfsm_forwarder->fwd_stats.fwd_tx_err++;
+					kfree_skb(tskb);
+					pfsm_forwarder->fwd_stats.fwd_tx_err++;
+					return;
+				}
+				concat_update_stats(type, numskb, plength);
+			}
+			rc = fsm_dp_tx_skb(
+				pfsm_forwarder->fsm_dp_tx_handle,
+				tskb);
+			pfsm_forwarder->fwd_stats.fwd_tx_cnt++;
+			if (rc) {
+				pfsm_forwarder->fwd_stats.fwd_tx_err++;
+				kfree_skb(tskb);
+				return;
+			}
+			numskb =  0;
+			numseg = 0;
+			fskb = pskb = NULL;
+			plength = 0;
+			goto again;
+		}
+		if ((numseg + skb_shinfo(tskb)->nr_frags + 1) >
+				FSM_DP_MAX_SG_IOV_SIZE ||
+			((plength + tskb->len)  >
+				pfsm_forwarder->fwd_dl_max_pdu_size)) {
+			rc = fsm_dp_tx_skb(
+				pfsm_forwarder->fsm_dp_tx_handle,
+				fskb);
+			if (rc) {
+				for (j = 0; j < numskb; j++)
+					kfree_skb(skb_queue_sav[j]);
+				pfsm_forwarder->fwd_stats.fwd_tx_err++;
+				kfree_skb(tskb);
+				pfsm_forwarder->fwd_stats.fwd_tx_err++;
+				return;
+			}
+			concat_update_stats(type, numskb, plength);
+			numskb =  0;
+			numseg = 0;
+			fskb = pskb = NULL;
+			plength = 0;
+		}
+		skb_queue_sav[numskb] = tskb;
+		numskb++;
+		if (numskb == 1)
+			fskb = tskb;
+		else if (numskb == 2)
+			skb_shinfo(fskb)->frag_list = tskb;
+		else
+			pskb->next = tskb;
+		plength += tskb->len;
+		numseg += skb_shinfo(tskb)->nr_frags + 1;
+		if (pskb) {
+			ecpri_hdr = (struct ecpri_common_header *)
+					pskb->data;
+			ecpri_hdr->rev_c |= ECRPI_C_MASK;
+		}
+		pskb = tskb;
+		if (numskb >= FSM_ORU_XMIT_MAX_SKB)
+			break;
+	}
+	if (numskb) {
+		rc = fsm_dp_tx_skb(
+			pfsm_forwarder->fsm_dp_tx_handle, fskb);
+		pfsm_forwarder->fwd_stats.fwd_tx_cnt++;
+		if (rc) {
+			for (j = 0; j < numskb; j++) {
+				kfree_skb(skb_queue_sav[j]);
+				pfsm_forwarder->fwd_stats.fwd_tx_err++;
+			}
+		}
+
+		concat_update_stats(type, numskb, plength);
+
+		numskb =  0;
+		numseg = 0;
+		fskb = pskb = NULL;
+		plength = 0;
+		goto again;
+	}
+}
+
+static bool fsm_oru_flush_delay_queue(unsigned int type)
+{
+	void *delay_ring, *xmit_ring;
+	fsm_dp_ring_element_data_t ring_element;
+	unsigned int flag;
+	atomic_t *delay_cnt;
+	bool rc = false;
+	int count = 0;
+#define FWD_CONCAT_FLUSH_THRESHOLD 32
+
+	if (type == FSM_ORU_MSG_TYPE_UPLANE) {
+		delay_ring = pfsm_forwarder->ecpri_uplane_delay_ring;
+		xmit_ring = pfsm_forwarder->ecpri_uplane_xmit_ring;
+		delay_cnt = &pfsm_forwarder->ecpri_uplane_delay_cnt;
+	} else {
+		delay_ring = pfsm_forwarder->ecpri_cplane_delay_ring;
+		xmit_ring = pfsm_forwarder->ecpri_cplane_xmit_ring;
+		delay_cnt = &pfsm_forwarder->ecpri_cplane_delay_cnt;
+	}
+	while (true) {
+		if (fsm_dp_ex_ring_read(delay_ring, &ring_element, &flag))
+			break;
+		atomic_dec(delay_cnt);
+		count++;
+		if (fsm_dp_ex_ring_write(xmit_ring, ring_element, flag)) {
+			kfree_skb((struct sk_buff *) (ring_element));
+			pfsm_forwarder->fwd_stats.xmit_queue_ovf_drop++;
+			break;
+		}
+		if (count >= FWD_CONCAT_FLUSH_THRESHOLD) {
+			rc = true;
+			break;
+		}
+	}
+	return rc;
+}
+
+static void fsm_oru_flush_xmit_queue(unsigned int type)
+{
+
+	if (!pfsm_forwarder->fwd_enable) {
+		fsm_oru_xmit_queue_cleanup(type);
+		return;
+	}
+
+	fsm_oru_xmit_queue_concat(type);
 }
 
 static int fsm_oru_fwd_disable(void)
 {
-	unsigned long flags;
-
-	if (!pfsm_forwarder->fwd_enable)
+	if (!pfsm_forwarder->fwd_enable) {
+		pr_warn("%s: end",  __func__);
 		return 0;
+	}
 
-	spin_lock_irqsave(&pfsm_forwarder->fwd_uplane_lock, flags);
-	fsm_queue_flush(flags, FSM_ORU_MSG_TYPE_UPLANE);
+	pfsm_forwarder->fwd_enable = false;
+	wmb(); /* make other cpu see */
 
-	spin_lock_irqsave(&pfsm_forwarder->fwd_cplane_lock, flags);
-	fsm_queue_flush(flags, FSM_ORU_MSG_TYPE_CPLANE);
+	fsm_oru_xmit_queue_cleanup(FSM_ORU_MSG_TYPE_UPLANE);
+	fsm_oru_delay_queue_cleanup(FSM_ORU_MSG_TYPE_UPLANE);
 
-	if (fsm_oru_forwarder_netdev)
-		dev_remove_pack(&fsm_oru_fwd_pt);
+	fsm_oru_xmit_queue_cleanup(FSM_ORU_MSG_TYPE_CPLANE);
+	fsm_oru_delay_queue_cleanup(FSM_ORU_MSG_TYPE_CPLANE);
+
 	fsm_oru_forwarder_netdev = NULL;
 	pfsm_forwarder->fwd_has_target_eth = false;
 	pfsm_forwarder->fwd_has_target_ip = false;
-	pfsm_forwarder->fwd_enable = false;
+
 	return 0;
 }
 
@@ -866,7 +1232,7 @@ static void fsm_oru_fwd_nl_control(
 )
 {
 	resp_fwd->crd = FSM_ORU_FWD_NETLINK_MSG_RETURNCODE;
-	if (fwd_header->enable) {
+	if (!pfsm_forwarder->fwd_enable && fwd_header->enable) {
 
 		memcpy(pfsm_forwarder->fwd_netdev_name, pfsm_forwarder->fwd_cfg.dev,
 					FSM_ORU_FWD_MAX_STR_LEN);
@@ -924,7 +1290,9 @@ static void fsm_oru_fwd_nl_statitics(
 	resp_fwd->fwd_stats.fwd_tx_cnt       = pfsm_forwarder->fwd_stats.fwd_tx_cnt;
 	resp_fwd->fwd_stats.fwd_tx_err       = pfsm_forwarder->fwd_stats.fwd_tx_err;
 	resp_fwd->fwd_stats.fwd_rx_from_device_cnt =  pfsm_forwarder->fwd_stats.fwd_rx_from_device_cnt;
-	resp_fwd->fwd_stats.fwd_drop         = pfsm_forwarder->fwd_stats.fwd_drop;
+	resp_fwd->fwd_stats.fwd_drop         =
+		pfsm_forwarder->fwd_stats.fwd_drop +
+				 pfsm_forwarder->fwd_stats.xmit_queue_ovf_drop;
 	resp_fwd->fwd_stats.fwd_to_net_cnt   = pfsm_forwarder->fwd_stats.fwd_to_net_cnt;
 	resp_fwd->fwd_stats.fwd_to_net_err   = pfsm_forwarder->fwd_stats.fwd_to_net_err;
 	resp_fwd->fwd_stats.fwd_free_ul_buf  = pfsm_forwarder->fwd_stats.fwd_free_ul_buf;
@@ -1121,138 +1489,44 @@ drop:
 	return NET_RX_SUCCESS;
 }
 
-
-/*
- * fsm_queue_flush: flush queued skbs
- * Before the call, spinlock is locked.
- * The spinlock will be unlocked when this function is done
- * type: 0 Uplane, 1 Cplane.
- */
-static void fsm_queue_flush(unsigned long flags, int type)
+static void fsm_oru_xmit_work(struct work_struct *work)
 {
-	struct sk_buff *skb_queue_sav[FSM_QUEUE_MAX];
-	struct sk_buff *tskb, *pskb, *fskb;
-	int rc;
-	struct ecpri_common_header *ecpri_hdr;
-	unsigned int i;
-	unsigned int num_queue_entries;
-	unsigned long cycle_start;
-	struct sk_buff **pskbq;
-
-	if (type == FSM_ORU_MSG_TYPE_UPLANE) {
-		if (pfsm_forwarder->fwd_queue_uplane_index == 0) {
-			spin_unlock_irqrestore(&pfsm_forwarder->fwd_uplane_lock,
-						flags);
-			return;
-		}
-		num_queue_entries = pfsm_forwarder->fwd_queue_uplane_index;
-		fskb = pskb = pfsm_forwarder->skb_uplane_queue[0];
-	} else {
-		if (pfsm_forwarder->fwd_queue_cplane_index == 0) {
-			spin_unlock_irqrestore(&pfsm_forwarder->fwd_cplane_lock,
-						flags);
-			return;
-		}
-		num_queue_entries = pfsm_forwarder->fwd_queue_cplane_index;
-		fskb = pskb = pfsm_forwarder->skb_cplane_queue[0];
-	}
-
-	cycle_start = fwd_get_cycles();
-
-	pskbq = (type == FSM_ORU_MSG_TYPE_CPLANE) ?
-			&pfsm_forwarder->skb_cplane_queue[0] : &pfsm_forwarder->skb_uplane_queue[0];
-	for (i = 0; i < num_queue_entries; i++) {
-
-		tskb = *pskbq++;
-		skb_queue_sav[i] = tskb;
-		tskb->next = NULL;
-		skb_shinfo(tskb)->frag_list = NULL;
-		ecpri_hdr = (struct ecpri_common_header *) tskb->data;
-		if (i != num_queue_entries - 1)
-			ecpri_hdr->rev_c |= ECRPI_C_MASK;
-		if (i != 0) {
-			if (i == 1)
-				skb_shinfo(fskb)->frag_list = tskb;
-			else
-				pskb->next = tskb;
-		}
-		pskb = tskb;
-	}
-	if (type == FSM_ORU_MSG_TYPE_UPLANE) {
-		pfsm_forwarder->fwd_queue_uplane_index = 0;
-		pfsm_forwarder->fwd_queue_uplane_length = 0;
-		pfsm_forwarder->fwd_queue_uplane_seg = 0;
-		hrtimer_cancel(&pfsm_forwarder->fsm_oru_concat_uplane_hrtimer);
-		spin_unlock_irqrestore(&pfsm_forwarder->fwd_uplane_lock, flags);
-	} else {
-		pfsm_forwarder->fwd_queue_cplane_index = 0;
-		pfsm_forwarder->fwd_queue_cplane_length = 0;
-		pfsm_forwarder->fwd_queue_cplane_seg = 0;
-		hrtimer_cancel(&pfsm_forwarder->fsm_oru_concat_cplane_hrtimer);
-		spin_unlock_irqrestore(&pfsm_forwarder->fwd_cplane_lock, flags);
-	}
-
-	fskb->tstamp = cycle_start;
-	rc = fsm_dp_tx_skb(pfsm_forwarder->fsm_dp_tx_handle, fskb);
-	pfsm_forwarder->fwd_stats.fwd_tx_cnt++;
-	pfsm_forwarder->fwd_dl_cycles += (fwd_get_cycles() - cycle_start);
-	pfsm_forwarder->fwd_dl_cycles_pkt_cnt++;
-
-	if (!rc)
-		return;
-	if (rc) {
-		for (i = 0; i < num_queue_entries; i++)
-			kfree_skb(skb_queue_sav[i]);
-		pfsm_forwarder->fwd_stats.fwd_tx_err++;
-	}
-}
-
-static void fsm_oru_timeout_work(struct work_struct *work)
-{
-	unsigned long flags;
-	int type;
+	unsigned int type;
+	bool more = true;
 
 	type = (work == &pfsm_forwarder->fsm_oru_cplane_work) ?
 		FSM_ORU_MSG_TYPE_CPLANE : FSM_ORU_MSG_TYPE_UPLANE;
 
-	if (type == FSM_ORU_MSG_TYPE_CPLANE)
-		spin_lock_irqsave(&pfsm_forwarder->fwd_cplane_lock, flags);
-	else
-		spin_lock_irqsave(&pfsm_forwarder->fwd_uplane_lock, flags);
-	fsm_queue_flush(flags, type);
+	if (!pfsm_forwarder->fwd_enable) {
+		fsm_oru_delay_queue_cleanup(type);
+		return;
+	}
+	if (!pfsm_forwarder->fwd_dl_concat) {
+		fsm_oru_queue_flush_no_concat(type);
+		return;
+	}
+	while (more) {
+		more = fsm_oru_flush_delay_queue(type);
+		fsm_oru_flush_xmit_queue(type);
+	}
 }
 
 static int fsm_queue_tx_skb(struct sk_buff *skb)
 {
 	struct ecpri_common_header *ecpri_hdr;
-	unsigned long flags;
 	unsigned long pkt_cycle;
-	int type;
+	unsigned int type;
 	unsigned int ecpri_plen;
 	unsigned int ecpri_mlen;
+	struct work_struct *work;
+	void *delay_ring;
+	atomic_t *p_ecpri_delay_cnt;
+	fsm_dp_ring_element_data_t ring_element;
+	unsigned int flag, pcnt;
 
-	if (!pfsm_forwarder->fwd_dl_concat) {
-		pfsm_forwarder->fwd_stats.fwd_tx_cnt++;
-		return fsm_dp_tx_skb(pfsm_forwarder->fsm_dp_tx_handle, skb);
-	}
 	ecpri_hdr = (struct ecpri_common_header *) skb->data;
 	type = ((ecpri_hdr->msg_type != ECPRI_MSG_IQ_DATA)
 			&& (ecpri_hdr->msg_type != ECPRI_MSG_BIT_SEQ));
-
-
-	/*
-	 * if ecpri msg already has been ccncatenated, flush the queue and
-	 * msg.
-	 */
-	if (ecpri_cbit(ecpri_hdr)) {
-		if (type == FSM_ORU_MSG_TYPE_CPLANE)
-			spin_lock_irqsave(&pfsm_forwarder->fwd_cplane_lock, flags);
-		else
-			spin_lock_irqsave(&pfsm_forwarder->fwd_uplane_lock, flags);
-		fsm_queue_flush(flags, type);
-		pfsm_forwarder->fwd_stats.fwd_tx_cnt++;
-		return fsm_dp_tx_skb(pfsm_forwarder->fsm_dp_tx_handle, skb);
-	}
 
 	ecpri_mlen = ntohs(ecpri_hdr->payload_size);
 	ecpri_plen =  ecpri_mlen + sizeof(*ecpri_hdr);
@@ -1286,62 +1560,74 @@ static int fsm_queue_tx_skb(struct sk_buff *skb)
 	}
 
 	pkt_cycle = get_cycles();
+	skb->tstamp = pkt_cycle;
 
-	if (type == FSM_ORU_MSG_TYPE_CPLANE) {
-		spin_lock_irqsave(&pfsm_forwarder->fwd_cplane_lock, flags);
-		if (((pfsm_forwarder->fwd_queue_cplane_seg +
-			skb_shinfo(skb)->nr_frags + 1) >
-				FSM_DP_MAX_SG_IOV_SIZE) ||
-			((pfsm_forwarder->fwd_queue_cplane_length + skb->len)
-						> pfsm_forwarder->fwd_dl_max_pdu_size)) {
-			fsm_queue_flush(flags, type);
-			spin_lock_irqsave(&pfsm_forwarder->fwd_cplane_lock, flags);
-		}
-		pfsm_forwarder->skb_cplane_queue[pfsm_forwarder->fwd_queue_cplane_index] = skb;
-		pfsm_forwarder->fwd_queue_cplane_index++;
-		pfsm_forwarder->fwd_queue_cplane_length += skb->len;
-		pfsm_forwarder->fwd_queue_cplane_seg += skb_shinfo(skb)->nr_frags + 1;
-		if (pfsm_forwarder->fwd_queue_cplane_index == 1) {
-			pfsm_forwarder->fwd_queue_cplane_1st_cycle = pkt_cycle;
-			hrtimer_start(&pfsm_forwarder->fsm_oru_concat_cplane_hrtimer,
-				ns_to_ktime(pfsm_forwarder->fwd_dl_concat_cplane_max_delay *
-									1000),
-				HRTIMER_MODE_REL_PINNED);
-		} else if (pfsm_forwarder->fwd_queue_cplane_index >= pfsm_forwarder->fwd_queue_max ||
-			(pkt_cycle - pfsm_forwarder->fwd_queue_cplane_1st_cycle) >=
-				pfsm_forwarder->fwd_dl_concat_cplane_min_delay_cycle) {
-			fsm_queue_flush(flags, type);
-			return 0;
-		}
-		spin_unlock_irqrestore(&pfsm_forwarder->fwd_cplane_lock, flags);
+	/* if non-concat, ignore type and work only on uplane delay queue */
+	if (!pfsm_forwarder->fwd_dl_concat || type == FSM_ORU_MSG_TYPE_UPLANE) {
+		delay_ring = pfsm_forwarder->ecpri_uplane_delay_ring;
+		p_ecpri_delay_cnt = &pfsm_forwarder->ecpri_uplane_delay_cnt;
+		work = &pfsm_forwarder->fsm_oru_uplane_work;
+
 	} else {
-		spin_lock_irqsave(&pfsm_forwarder->fwd_uplane_lock, flags);
-		if (((pfsm_forwarder->fwd_queue_uplane_seg +
-				skb_shinfo(skb)->nr_frags + 1) >
-					FSM_DP_MAX_SG_IOV_SIZE) ||
-			((pfsm_forwarder->fwd_queue_uplane_length + skb->len)
-						> pfsm_forwarder->fwd_dl_max_pdu_size)) {
-			fsm_queue_flush(flags, type);
-			spin_lock_irqsave(&pfsm_forwarder->fwd_uplane_lock, flags);
-		}
-		pfsm_forwarder->skb_uplane_queue[pfsm_forwarder->fwd_queue_uplane_index] = skb;
-		pfsm_forwarder->fwd_queue_uplane_index++;
-		pfsm_forwarder->fwd_queue_uplane_length += skb->len;
-		pfsm_forwarder->fwd_queue_uplane_seg += skb_shinfo(skb)->nr_frags + 1;
-		if (pfsm_forwarder->fwd_queue_uplane_index == 1) {
-			pfsm_forwarder->fwd_queue_uplane_1st_cycle = pkt_cycle;
-			hrtimer_start(&pfsm_forwarder->fsm_oru_concat_uplane_hrtimer,
-				ns_to_ktime(pfsm_forwarder->fwd_dl_concat_uplane_max_delay *
-									1000),
-				HRTIMER_MODE_REL_PINNED);
-		} else if (pfsm_forwarder->fwd_queue_uplane_index >= pfsm_forwarder->fwd_queue_max ||
-			(pkt_cycle - pfsm_forwarder->fwd_queue_uplane_1st_cycle) >=
-				pfsm_forwarder->fwd_dl_concat_uplane_min_delay_cycle) {
-			fsm_queue_flush(flags, type);
-			return 0;
-		}
-		spin_unlock_irqrestore(&pfsm_forwarder->fwd_uplane_lock, flags);
+		delay_ring = pfsm_forwarder->ecpri_cplane_delay_ring;
+		p_ecpri_delay_cnt = &pfsm_forwarder->ecpri_cplane_delay_cnt;
+		work = &pfsm_forwarder->fsm_oru_cplane_work;
 	}
+
+	ring_element = (fsm_dp_ring_element_data_t) skb;
+	flag = ecpri_cbit(ecpri_hdr);
+	if (fsm_dp_ex_ring_write(delay_ring, ring_element, flag)) {
+		pfsm_forwarder->fwd_stats.delay_queue_ovf_drop++;
+		return -1;
+	}
+	pcnt = atomic_add_return(1, p_ecpri_delay_cnt);
+
+	if (!pfsm_forwarder->fwd_dl_concat) {
+		if (pcnt == 1 || pfsm_forwarder->need_special_schedule)
+			goto flush_delay_queue_work;
+		else
+			return 0;
+	}
+	if (type == FSM_ORU_MSG_TYPE_CPLANE) {
+		if (!hrtimer_active(
+			&pfsm_forwarder->fsm_oru_concat_cplane_hrtimer)) {
+			hrtimer_start(
+				&pfsm_forwarder->fsm_oru_concat_cplane_hrtimer,
+				ns_to_ktime(pfsm_forwarder->fwd_dl_concat_cplane_max_delay
+								* 1000),
+				HRTIMER_MODE_REL_PINNED);
+			pfsm_forwarder->cplane_1st_arrival_cycle = pkt_cycle;
+		}
+	} else if (!hrtimer_active(
+			&pfsm_forwarder->fsm_oru_concat_cplane_hrtimer)) {
+		hrtimer_start(
+				&pfsm_forwarder->fsm_oru_concat_uplane_hrtimer,
+				ns_to_ktime(pfsm_forwarder->fwd_dl_concat_uplane_max_delay
+								* 1000),
+				HRTIMER_MODE_REL_PINNED);
+		pfsm_forwarder->uplane_1st_arrival_cycle = pkt_cycle;
+	}
+	if (type == FSM_ORU_MSG_TYPE_CPLANE) {
+		if (pfsm_forwarder->cplane_1st_arrival_cycle == 0)
+			pfsm_forwarder->cplane_1st_arrival_cycle = pkt_cycle;
+		if ((pkt_cycle - pfsm_forwarder->cplane_1st_arrival_cycle) >=
+			pfsm_forwarder->fwd_dl_concat_cplane_min_delay_cycle) {
+			pfsm_forwarder->cplane_1st_arrival_cycle = 0;
+			goto flush_delay_queue_work;
+		}
+	} else {
+		if (pfsm_forwarder->uplane_1st_arrival_cycle == 0)
+			pfsm_forwarder->uplane_1st_arrival_cycle = pkt_cycle;
+		if ((pkt_cycle - pfsm_forwarder->uplane_1st_arrival_cycle) >=
+			pfsm_forwarder->fwd_dl_concat_uplane_min_delay_cycle) {
+			pfsm_forwarder->uplane_1st_arrival_cycle = 0;
+			goto flush_delay_queue_work;
+		}
+	}
+	return 0;
+
+flush_delay_queue_work:
+	queue_work_on(FORWARDER_WORK_CPU, pfsm_forwarder->fsm_oru_wq, work);
 	return 0;
 }
 
@@ -1359,6 +1645,12 @@ static int fsm_oru_forwarder_rcv(
 		return NET_RX_DROP;
 	}
 
+	if (!pfsm_forwarder->fwd_enable ||
+			fsm_oru_forwarder_netdev != orig_dev) {
+		kfree_skb(skb);
+		pfsm_forwarder->fwd_stats.fwd_drop++;
+		return NET_RX_DROP;
+	}
 	pfsm_forwarder->fwd_stats.fwd_from_net_cnt++;
 
 
@@ -1701,6 +1993,16 @@ static void _fsm_oru_fwd_cleanup(void)
 
 	if (pfsm_forwarder->fsm_oru_wq)
 		destroy_workqueue(pfsm_forwarder->fsm_oru_wq);
+
+	if (pfsm_forwarder->ecpri_uplane_xmit_ring)
+		fsm_dp_ex_ring_cleanup(pfsm_forwarder->ecpri_uplane_xmit_ring);
+	if (pfsm_forwarder->ecpri_cplane_xmit_ring)
+		fsm_dp_ex_ring_cleanup(pfsm_forwarder->ecpri_cplane_xmit_ring);
+	if (pfsm_forwarder->ecpri_uplane_delay_ring)
+		fsm_dp_ex_ring_cleanup(pfsm_forwarder->ecpri_uplane_delay_ring);
+	if (pfsm_forwarder->ecpri_cplane_delay_ring)
+		fsm_dp_ex_ring_cleanup(pfsm_forwarder->ecpri_cplane_delay_ring);
+
 	kfree(pfsm_forwarder);
 }
 
@@ -1891,6 +2193,7 @@ static void fsm_oru_fwd_init_time_measurement(void)
 static void fsm_oru_fwd_exit(void)
 {
 	_fsm_oru_fwd_cleanup();
+	dev_remove_pack(&fsm_oru_fwd_pt);
 	pr_info("ORU Forwarder removed. oru_fwd_etype=%x\n",
 							oru_fwd_etype);
 }
@@ -1899,7 +2202,8 @@ static enum hrtimer_restart fsm_oru_fwd_concat_utimer_handler(
 		struct hrtimer *me)
 {
 
-	queue_work(pfsm_forwarder->fsm_oru_wq, &pfsm_forwarder->fsm_oru_uplane_work);
+	queue_work_on(FORWARDER_WORK_CPU, pfsm_forwarder->fsm_oru_wq,
+				&pfsm_forwarder->fsm_oru_uplane_work);
 	return HRTIMER_NORESTART;
 }
 
@@ -1907,11 +2211,12 @@ static enum hrtimer_restart fsm_oru_fwd_concat_ctimer_handler(
 		struct hrtimer *me)
 {
 
-	queue_work(pfsm_forwarder->fsm_oru_wq, &pfsm_forwarder->fsm_oru_cplane_work);
+	queue_work_on(FORWARDER_WORK_CPU, pfsm_forwarder->fsm_oru_wq,
+				&pfsm_forwarder->fsm_oru_cplane_work);
 	return HRTIMER_NORESTART;
 }
 
-static void fsm_oru_fwd_init_var(void)
+static bool fsm_oru_fwd_init_var(void)
 {
 	struct fsm_oru_fwd_cfg def_fwd_cfg = {
 		"eth1",
@@ -1944,7 +2249,7 @@ static void fsm_oru_fwd_init_var(void)
 					DEFAULT_UPLANE_DL_CONCAT_MAX_DELAY;
 	pfsm_forwarder->fwd_dl_concat_uplane_min_delay =
 					DEFAULT_UPLANE_DL_CONCAT_MIN_DELAY;
-	pfsm_forwarder->fwd_queue_max = FSM_QUEUE_MAX;
+	pfsm_forwarder->fwd_queue_max = FSM_DP_MAX_SG_IOV_SIZE;
 	pfsm_forwarder->fwd_dl_concat = false;
 
 	pfsm_forwarder->fwd_ul_traffic_index = -1;
@@ -1974,6 +2279,50 @@ static void fsm_oru_fwd_init_var(void)
 	pfsm_forwarder->fwd_vlan_enable = false;
 	pfsm_forwarder->fwd_has_target_eth = false;
 	pfsm_forwarder->fwd_has_target_ip = false;
+
+	pfsm_forwarder->ecpri_uplane_delay_ring =
+		fsm_dp_ex_ring_init(FSM_ORU_DELAY_LOCKQ_SIZE,
+						FSM_ORU_U_DELAY_LOCKQ_ID);
+	if (!pfsm_forwarder->ecpri_uplane_delay_ring)
+		return NULL;
+	pfsm_forwarder->ecpri_cplane_delay_ring =
+		fsm_dp_ex_ring_init(FSM_ORU_DELAY_LOCKQ_SIZE,
+						FSM_ORU_C_DELAY_LOCKQ_ID);
+	if (!pfsm_forwarder->ecpri_cplane_delay_ring) {
+		fsm_dp_ex_ring_cleanup(pfsm_forwarder->ecpri_uplane_delay_ring);
+		pfsm_forwarder->ecpri_uplane_delay_ring = NULL;
+		return false;
+	}
+	pfsm_forwarder->ecpri_uplane_xmit_ring =
+		fsm_dp_ex_ring_init(FSM_ORU_XMIT_LOCKQ_SIZE,
+						FSM_ORU_U_XMIT_LOCKQ_ID);
+	if (!pfsm_forwarder->ecpri_uplane_xmit_ring) {
+		fsm_dp_ex_ring_cleanup(pfsm_forwarder->ecpri_uplane_delay_ring);
+		pfsm_forwarder->ecpri_uplane_delay_ring = NULL;
+		fsm_dp_ex_ring_cleanup(pfsm_forwarder->ecpri_cplane_delay_ring);
+		pfsm_forwarder->ecpri_cplane_delay_ring = NULL;
+		return false;
+	}
+	pfsm_forwarder->ecpri_cplane_xmit_ring =
+		fsm_dp_ex_ring_init(FSM_ORU_XMIT_LOCKQ_SIZE,
+						FSM_ORU_C_XMIT_LOCKQ_ID);
+	if (!pfsm_forwarder->ecpri_cplane_xmit_ring) {
+		fsm_dp_ex_ring_cleanup(pfsm_forwarder->ecpri_uplane_delay_ring);
+		pfsm_forwarder->ecpri_uplane_delay_ring = NULL;
+		fsm_dp_ex_ring_cleanup(pfsm_forwarder->ecpri_cplane_delay_ring);
+		pfsm_forwarder->ecpri_cplane_delay_ring = NULL;
+		fsm_dp_ex_ring_cleanup(pfsm_forwarder->ecpri_uplane_xmit_ring);
+		pfsm_forwarder->ecpri_uplane_xmit_ring = NULL;
+		return false;
+	}
+	atomic_set(&pfsm_forwarder->ecpri_uplane_delay_cnt, 0);
+	atomic_set(&pfsm_forwarder->ecpri_cplane_delay_cnt, 0);
+	pfsm_forwarder->fwd_stats.fwd_dl_min_u_pdu = FWD_STATS_MIN;
+	pfsm_forwarder->fwd_stats.fwd_dl_min_u_concat = FWD_STATS_MIN;
+	pfsm_forwarder->fwd_stats.fwd_dl_min_c_pdu = FWD_STATS_MIN;
+	pfsm_forwarder->fwd_stats.fwd_dl_min_c_concat = FWD_STATS_MIN;
+	pfsm_forwarder->need_special_schedule = false;
+	return true;
 }
 
 static int fsm_oru_fwd_init(void)
@@ -1981,12 +2330,14 @@ static int fsm_oru_fwd_init(void)
 	int ret = 0;
 	struct workqueue_struct *wq;
 
-
 	pfsm_forwarder = kzalloc(sizeof(*pfsm_forwarder), GFP_KERNEL);
 	if (!pfsm_forwarder)
 		return -ENOMEM;
 
-	fsm_oru_fwd_init_var();
+	if (!fsm_oru_fwd_init_var()) {
+		kfree(pfsm_forwarder);
+		return -ENOMEM;
+	}
 
 	nl_socket_handle = _fsm_oru_fwd_start_netlink();
 	if (!nl_socket_handle) {
@@ -1994,9 +2345,7 @@ static int fsm_oru_fwd_init(void)
 		kfree(pfsm_forwarder);
 		return -ENOMEM;
 	}
-
-	spin_lock_init(&pfsm_forwarder->fwd_uplane_lock);
-	spin_lock_init(&pfsm_forwarder->fwd_cplane_lock);
+	dev_add_pack(&fsm_oru_fwd_pt);
 	hrtimer_init(&pfsm_forwarder->fsm_oru_concat_uplane_hrtimer, CLOCK_MONOTONIC,
 			HRTIMER_MODE_REL);
 	hrtimer_init(&pfsm_forwarder->fsm_oru_concat_cplane_hrtimer, CLOCK_MONOTONIC,
@@ -2005,19 +2354,17 @@ static int fsm_oru_fwd_init(void)
 				fsm_oru_fwd_concat_utimer_handler;
 	pfsm_forwarder->fsm_oru_concat_cplane_hrtimer.function =
 				fsm_oru_fwd_concat_ctimer_handler;
-	wq = alloc_workqueue("fsm_oru_concat", WQ_MEM_RECLAIM, 0);
+	wq = alloc_ordered_workqueue("fsm_oru_concat",
+					WQ_HIGHPRI | WQ_MEM_RECLAIM);
 	if (!wq) {
 		ret = -ENOMEM;
 		goto out;
 	}
 	pfsm_forwarder->fsm_oru_wq = wq;
 
-	INIT_WORK(&pfsm_forwarder->fsm_oru_uplane_work, fsm_oru_timeout_work);
-	INIT_WORK(&pfsm_forwarder->fsm_oru_cplane_work, fsm_oru_timeout_work);
+	INIT_WORK(&pfsm_forwarder->fsm_oru_uplane_work, fsm_oru_xmit_work);
+	INIT_WORK(&pfsm_forwarder->fsm_oru_cplane_work, fsm_oru_xmit_work);
 
-	ret =  fsm_oru_fwd_enable();
-	if (ret)
-		goto out;
 
 #ifdef FSM_ORU_FWD_TEST
 	pfsm_forwarder->fsm_dp_tx_handle = fsm_dp_register_kernel_client(
@@ -2047,14 +2394,21 @@ static int fsm_oru_fwd_init(void)
 	ret = fsm_oru_fwd_netdev_init();
 	if (ret)
 		goto out;
+
+	ret =  fsm_oru_fwd_enable();
+	if (ret)
+		goto out;
+
 	ret = fsm_oru_fwd_debugfs_init();
 	if (!ret) {
 		pr_info("ORU Forwarder loaded. dev %s oru_fwd_etype=%x\n",
 			pfsm_forwarder->fwd_netdev_name, oru_fwd_etype);
 		return 0;
 	}
+
 out:
 	_fsm_oru_fwd_cleanup();
+	dev_remove_pack(&fsm_oru_fwd_pt);
 	return ret;
 }
 

@@ -136,12 +136,12 @@ struct fsm_oru_fwdr {
 	uint64_t fwd_dl_cycles;
 	uint64_t fwd_ul_cycles;
 
-	uint32_t fwd_ul_traffic_index;
+	int32_t fwd_ul_traffic_index;
 	bool fwd_ul_traffic_collect_done;
 	bool fwd_ul_traffic_collect;
 	struct fwd_time_stamp fwd_ul_traffic[FWD_TRAFFIC_ARRAY_SIZE];
 
-	uint32_t fwd_dl_traffic_index;
+	int32_t fwd_dl_traffic_index;
 	bool fwd_dl_traffic_collect_done;
 	bool fwd_dl_traffic_collect;
 	struct fwd_time_stamp fwd_dl_traffic[FWD_TRAFFIC_ARRAY_SIZE];

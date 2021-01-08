@@ -167,6 +167,22 @@ int fsm_dp_ring_init(
 	return 0;
 }
 
+void *fsm_dp_ex_ring_init(
+	unsigned int ringsz,
+	unsigned int ringid)
+{
+	struct fsm_dp_ring *ring;
+	ring =   kzalloc(sizeof(*ring), GFP_KERNEL);
+	if (!ring)
+		return NULL;
+	if (fsm_dp_ring_init(ring, ringsz, ringid)) {
+		kfree(ring);
+		return NULL;
+	} else
+		return ((void *) ring);
+}
+EXPORT_SYMBOL(fsm_dp_ex_ring_init);
+
 void fsm_dp_ring_cleanup(struct fsm_dp_ring *ring)
 {
 	if (ring) {
@@ -174,6 +190,13 @@ void fsm_dp_ring_cleanup(struct fsm_dp_ring *ring)
 		memset(ring, 0, sizeof(*ring));
 	}
 }
+
+void fsm_dp_ex_ring_cleanup(void *ring)
+{
+	fsm_dp_ring_cleanup((struct fsm_dp_ring *)ring);
+	kfree(ring);
+}
+EXPORT_SYMBOL(fsm_dp_ex_ring_cleanup);
 
 int fsm_dp_ring_get_cfg(struct fsm_dp_ring *ring, struct fsm_dp_ring_cfg *cfg)
 {
@@ -195,6 +218,7 @@ int fsm_dp_ring_get_cfg(struct fsm_dp_ring *ring, struct fsm_dp_ring_cfg *cfg)
 							ring->loc.base);
 	return 0;
 }
+
 
 /* Read from ring */
 int fsm_dp_ring_read(
@@ -283,6 +307,15 @@ repeat:
 	goto repeat;
 }
 
+int fsm_dp_ex_ring_read(
+	void *ring,
+	fsm_dp_ring_element_data_t *element_ptr, unsigned int *flag)
+{
+
+	return fsm_dp_ring_read((struct fsm_dp_ring *)ring, element_ptr, flag);
+}
+EXPORT_SYMBOL(fsm_dp_ex_ring_read);
+
 /* Write to ring */
 int fsm_dp_ring_write(struct fsm_dp_ring *ring, fsm_dp_ring_element_data_t data,
 		unsigned int flag)
@@ -364,6 +397,15 @@ repeat:
 	goto repeat;
 }
 
+
+int fsm_dp_ex_ring_write(void *ring, fsm_dp_ring_element_data_t data,
+		unsigned int flag)
+{
+
+	return fsm_dp_ring_write((struct fsm_dp_ring *)ring, data, flag);
+}
+EXPORT_SYMBOL(fsm_dp_ex_ring_write);
+
 bool fsm_dp_ring_is_empty(struct fsm_dp_ring *ring)
 {
 	fsm_dp_ring_index_t prod_tail, cons_tail;
@@ -374,6 +416,13 @@ bool fsm_dp_ring_is_empty(struct fsm_dp_ring *ring)
 		return true;
 	return false;
 }
+
+bool fsm_dp_ex_ring_is_empty(void *ring)
+{
+
+	return fsm_dp_ring_is_empty((struct fsm_dp_ring *)ring);
+}
+EXPORT_SYMBOL(fsm_dp_ex_ring_is_empty);
 
 static int fsm_dp_mem_init(
 	struct fsm_dp_mem *mem,

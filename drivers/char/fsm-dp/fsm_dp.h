@@ -25,7 +25,7 @@
 #include <linux/netdevice.h>
 #include <linux/atomic.h>
 #include <linux/workqueue.h>
-
+#include <linux/fsm_dp_intf.h>
 #include <linux/fsm_dp_ioctl.h>
 
 #include "fsm_dp_mhi.h"

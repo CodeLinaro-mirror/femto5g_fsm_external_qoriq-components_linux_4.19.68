@@ -42,4 +42,19 @@ void fsm_dp_hex_dump(
 	unsigned int len
 );
 
+void *fsm_dp_ex_ring_init(unsigned int ringsz, unsigned int ringid);
+
+void fsm_dp_ex_ring_cleanup(void *ring);
+
+int fsm_dp_ex_ring_read(
+	void *ring,
+	fsm_dp_ring_element_data_t *element_data,
+	unsigned int *flag);
+
+int fsm_dp_ex_ring_write(
+	void *ring,
+	fsm_dp_ring_element_data_t element_data,
+	unsigned int flag);
+
+bool fsm_dp_ex_ring_is_empty(void *ring);
 #endif /* _FSM_DP_INTF_H_ */

@@ -617,7 +617,7 @@
 			clock-names = "qspi_en", "qspi";
 		};
 
-		pcie1: pcie@3400000 {
+		 pcie@3400000 {
 			compatible = "fsl,ls2080a-pcie", "fsl,ls2085a-pcie",
 				     "snps,dw-pcie";
 			reg-names = "regs", "config";
@@ -639,7 +639,7 @@
 			status = "disabled";
 		};
 
-		pcie2: pcie@3500000 {
+		pcie@3500000 {
 			compatible = "fsl,ls2080a-pcie", "fsl,ls2085a-pcie",
 				     "snps,dw-pcie";
 			reg-names = "regs", "config";
@@ -661,7 +661,7 @@
 			status = "disabled";
 		};
 
-		pcie3: pcie@3600000 {
+		pcie@3600000 {
 			compatible = "fsl,ls2080a-pcie", "fsl,ls2085a-pcie",
 				     "snps,dw-pcie";
 			reg-names = "regs", "config";
@@ -686,7 +686,7 @@
 					<0000 0 0 4 &gic 0 0 0 122 4>;
 		};
 
-		pcie4: pcie@3700000 {
+		pcie@3700000 {
 			compatible = "fsl,ls2080a-pcie", "fsl,ls2085a-pcie",
 				     "snps,dw-pcie";
 			reg-names = "regs", "config";

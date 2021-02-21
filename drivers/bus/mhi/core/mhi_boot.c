@@ -451,7 +451,7 @@ void mhi_fw_load_worker(struct work_struct *work)
 	int ret;
 	struct mhi_controller *mhi_cntrl;
 	const char *fw_name;
-	const struct firmware *firmware;
+	const struct firmware *firmware = NULL;
 	struct image_info *image_info;
 	void *buf;
 	dma_addr_t dma_addr;
@@ -476,7 +476,7 @@ void mhi_fw_load_worker(struct work_struct *work)
 
 	/* if device in pthru, we do not have to load firmware */
 	if (mhi_cntrl->ee == MHI_EE_PTHRU)
-		return;
+		goto fw_load_ee_pthru;
 
 	fw_name = (mhi_cntrl->ee == MHI_EE_EDL) ?
 		mhi_cntrl->edl_image : mhi_cntrl->fw_image;
@@ -540,6 +540,7 @@ void mhi_fw_load_worker(struct work_struct *work)
 		mhi_firmware_copy(mhi_cntrl, firmware, mhi_cntrl->fbc_image);
 	}
 
+fw_load_ee_pthru:
 	/* transitioning into MHI RESET->READY state */
 	ret = mhi_ready_state_transition(mhi_cntrl);
 

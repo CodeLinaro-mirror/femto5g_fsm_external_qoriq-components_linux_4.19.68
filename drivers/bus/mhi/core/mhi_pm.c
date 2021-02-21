@@ -264,6 +264,7 @@ int mhi_ready_state_transition(struct mhi_controller *mhi_cntrl)
 		MHI_ERR("Error programming mmio registers\n");
 		goto error_mmio;
 	}
+	MHI_LOG("MHI MIMO configuration complete\n");
 
 	/* add elements to all sw event rings */
 	mhi_event = mhi_cntrl->mhi_event;
@@ -433,7 +434,8 @@ static int mhi_pm_mission_mode_transition(struct mhi_controller *mhi_cntrl)
 	int ret;
 	bool (*force_pcie_reset)(void);
 
-	MHI_LOG("Processing Mission Mode Transition\n");
+	MHI_LOG("Processing Mission Mode Transition for dev: 0x%x\n",
+		mhi_cntrl->dev_id);
 
 	write_lock_irq(&mhi_cntrl->pm_lock);
 	if (MHI_REG_ACCESS_VALID(mhi_cntrl->pm_state))
@@ -476,6 +478,9 @@ static int mhi_pm_mission_mode_transition(struct mhi_controller *mhi_cntrl)
 	/* setup support for time sync */
 	if (mhi_cntrl->time_sync)
 		mhi_init_timesync(mhi_cntrl);
+
+	if ((mhi_cntrl->dev_id == 0x308) || (mhi_cntrl->dev_id == 0x307))
+		goto create_device;
 
 	/* force PCIe reset to bring PCIe EP to Gen 3 if PCIe controller supports it */
 	force_pcie_reset = get_pcie_reset_force_func();

@@ -285,8 +285,15 @@ static int mhi_fw_load_sbl(struct mhi_controller *mhi_cntrl,
 		{ "ERROR_DBG3", BHI_ERRDBG3 },
 		{ NULL },
 	};
+	struct mhi_device *mhi_dev = mhi_cntrl->mhi_dev;
 
-	MHI_LOG("Starting BHI programming\n");
+	MHI_LOG("Starting BHI programming, Domain %d\n", mhi_dev->domain);
+	mhi_write_reg(mhi_cntrl, base, BHI_RSVD5, mhi_dev->domain);
+	ret = mhi_read_reg(mhi_cntrl, base, BHI_RSVD5, &val);
+	if (ret)
+		MHI_ERR("Can not read BHI_RSVD5, ret %d\n", ret);
+	else
+		MHI_LOG("Read BHI_RSVD5 %d\n", val);
 
 	/* program start sbl download via  bhi protocol */
 	read_lock_bh(pm_lock);

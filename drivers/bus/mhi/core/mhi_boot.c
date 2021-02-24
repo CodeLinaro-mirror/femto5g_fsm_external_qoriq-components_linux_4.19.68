@@ -549,10 +549,8 @@ fw_load_ee_pthru:
 		TO_MHI_STATE_STR(mhi_cntrl->dev_state),
 		TO_MHI_EXEC_STR(mhi_cntrl->ee), ret);
 
-	if (!mhi_cntrl->fbc_download) {
-		release_firmware(firmware);
+	if (!mhi_cntrl->fbc_download)
 		return;
-	}
 
 	if (ret) {
 		MHI_ERR("Did not transition to READY state\n");

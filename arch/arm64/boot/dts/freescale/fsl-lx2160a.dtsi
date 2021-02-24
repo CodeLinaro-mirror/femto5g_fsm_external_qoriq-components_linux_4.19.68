@@ -1247,7 +1247,7 @@
 					<0000 0 0 2 &gic 0 0 GIC_SPI 120 IRQ_TYPE_LEVEL_HIGH>,
 					<0000 0 0 3 &gic 0 0 GIC_SPI 121 IRQ_TYPE_LEVEL_HIGH>,
 					<0000 0 0 4 &gic 0 0 GIC_SPI 122 IRQ_TYPE_LEVEL_HIGH>;
-			pcie_rc3: pcie_rc3@0,0 {
+			pcie_rc1: pcie_rc1@0,0 {
 				reg = <0 0 0 0 0>;
 			};
 		};
@@ -1316,13 +1316,18 @@
 			bus-range = <0x0 0xff>;
 			ranges = <0x82000000 0x0 0x40000000 0xa0 0x40000000 0x0 0x40000000>; /* non-prefetchable memory */
 			msi-parent = <&its>;
+			msi-map = <0x00 &its 0x2800 0x01 0x100 &its 0x2801 0x01>;
+			msi-map-mask = <0xffffffff>;
+			iommu-map = <0x00 &smmu 0x2800 0x1 0x100 &smmu 0x2801 0x01>;
 			#interrupt-cells = <1>;
 			interrupt-map-mask = <0 0 0 7>;
 			interrupt-map = <0000 0 0 1 &gic 0 0 GIC_SPI 129 IRQ_TYPE_LEVEL_HIGH>,
 					<0000 0 0 2 &gic 0 0 GIC_SPI 130 IRQ_TYPE_LEVEL_HIGH>,
 					<0000 0 0 3 &gic 0 0 GIC_SPI 131 IRQ_TYPE_LEVEL_HIGH>,
 					<0000 0 0 4 &gic 0 0 GIC_SPI 132 IRQ_TYPE_LEVEL_HIGH>;
-			status = "disabled";
+			pcie_rc2: pcie_rc2@0,0 {
+				reg = <0 0 0 0 0>;
+			};
 		};
 
 		pcie_ep@3800000 {

@@ -1,4 +1,4 @@
-/* Copyright (c) 2019-2020, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2019-2021, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -78,6 +78,9 @@ struct vm_area_struct;
 	if (cond) \
 		panic(msg); \
 } while (0)
+
+
+#define MAX_FSM_DP_DEVICE 2
 
 /*
  * vma mapping for mempool which includes

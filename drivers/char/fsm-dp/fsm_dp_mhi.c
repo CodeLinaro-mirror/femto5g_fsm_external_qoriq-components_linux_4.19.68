@@ -1,4 +1,4 @@
-/* Copyright (c) 2019-2020, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2019-2021, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -18,7 +18,9 @@
 #include "fsm_dp.h"
 #include "fsm_dp_mhi.h"
 
+/* __pdrv pointing to an array of fsm_dp_drv. */
 static struct fsm_dp_drv *__pdrv;
+
 
 
 /*
@@ -172,9 +174,9 @@ static void __mhi_ul_xfer_cb(
 	struct mhi_device *mhi_dev,
 	struct mhi_result *result)
 {
-	struct fsm_dp_drv *drv = mhi_device_get_devdata(mhi_dev);
-	struct fsm_dp_mhi *mhi = &drv->mhi;
-	void *addr = result->buf_addr;
+	struct fsm_dp_drv *drv;
+	struct fsm_dp_mhi *mhi;
+	void *addr;
 	struct fsm_dp_mempool *mempool;
 	unsigned int cl;
 
@@ -188,6 +190,9 @@ static void __mhi_ul_xfer_cb(
 		return;
 	}
 
+	drv = mhi_device_get_devdata(mhi_dev);
+	mhi = &drv->mhi;
+	addr = result->buf_addr;
 	if (result->buf_indirect) {
 		__mhi_ul_skb_xfer_cmplt((struct sk_buff *) addr);
 		return;
@@ -250,16 +255,17 @@ static void __mhi_dl_xfer_cb(
 	struct mhi_device *mhi_dev,
 	struct mhi_result *result)
 {
-	struct fsm_dp_drv *drv = mhi_device_get_devdata(mhi_dev);
-	struct fsm_dp_mhi *mhi = &drv->mhi;
-	struct fsm_dp_mempool *mempool = drv->mempool[FSM_DP_MEM_TYPE_UL];
+	struct fsm_dp_drv *drv;
+	struct fsm_dp_mhi *mhi;
+	struct fsm_dp_mempool *mempool;
 
 	FSM_DP_DEBUG("%s: dl_xfer_result addr=%p dir=%u bytes=%lu status=%d\n",
 		  __func__, result->buf_addr, result->dir,
 		  result->bytes_xferd, result->transaction_status);
-
+	drv = mhi_device_get_devdata(mhi_dev);
+	mhi = &drv->mhi;
+	mempool = drv->mempool[FSM_DP_MEM_TYPE_UL];
 	fsm_dp_hex_dump(result->buf_addr, result->bytes_xferd);
-
 	if (result->buf_addr == mempool->dummy_buf) {
 		mhi->stats.rx_outofbuf_drop++;
 		return;
@@ -318,11 +324,18 @@ static int fsm_dp_mhi_probe(
 
 	FSM_DP_DEBUG("%s: probing mhi\n", __func__);
 
+	FSM_DP_INFO("%s: probing mhi domain %d\n", __func__, mhi_dev->domain);
+	if (mhi_dev->domain >= MAX_FSM_DP_DEVICE) {
+		FSM_DP_ERROR("%s: dmain %d exceeds maximum %d\n", __func__,
+			mhi_dev->domain, MAX_FSM_DP_DEVICE);
+		return 0;
+	}
+
 	if (__pdrv == NULL)
 		return -ENODEV;
+	pdrv = pdrv + mhi_dev->domain;
 
-	mhi_device_set_devdata(mhi_dev, __pdrv);
-
+	mhi_device_set_devdata(mhi_dev, pdrv);
 
 	ret = mhi_prepare_for_transfer(mhi_dev);
 	if (ret) {
@@ -376,7 +389,7 @@ static struct mhi_driver __fsm_dp_mhi_drv = {
 	},
 };
 
-
+/* pdrv pointing to an array of fsm_dp_drv. */
 int fsm_dp_mhi_init(struct fsm_dp_drv *pdrv)
 {
 	int ret = -EBUSY;
@@ -395,6 +408,7 @@ int fsm_dp_mhi_init(struct fsm_dp_drv *pdrv)
 	return ret;
 }
 
+/* pdrv pointing to an array of fsm_dp_drv. */
 void fsm_dp_mhi_cleanup(struct fsm_dp_drv *pdrv)
 {
 	if (__pdrv) {

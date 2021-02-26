@@ -1,4 +1,4 @@
-/* Copyright (c) 2019-2020, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2019-2021, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -811,6 +811,15 @@ static int fsm_dp_cdev_open(struct inode *inode, struct file *file)
 	struct fsm_dp_drv *pdrv = container_of(inode->i_cdev,
 					    struct fsm_dp_drv, cdev);
 	struct fsm_dp_cdev *cdev;
+	unsigned int minor;
+
+	minor = iminor(inode);
+	if (minor >= MAX_FSM_DP_DEVICE) {
+		pr_err("device minor number %d should not be greater than 1 \n",
+			minor);
+		return -EINVAL;
+	}
+	pdrv += (iminor(inode));
 
 	cdev = kzalloc(sizeof(*cdev), GFP_KERNEL);
 	if (IS_ERR(cdev)) {
@@ -869,6 +878,9 @@ int fsm_dp_cdev_init(struct fsm_dp_drv *pdrv)
 	struct device *dev;
 	dev_t devno;
 	int ret;
+	struct fsm_dp_drv *p;
+	int i, numdev;
+	char fsm_device_name[256];
 
 	pdrv->dev_class = class_create(THIS_MODULE, FSM_DP_DEV_CLASS_NAME);
 	if (IS_ERR(pdrv->dev_class)) {
@@ -876,37 +888,58 @@ int fsm_dp_cdev_init(struct fsm_dp_drv *pdrv)
 		return -ENOMEM;
 	}
 
-	ret = alloc_chrdev_region(&devno, 0, 1, FSM_DP_CDEV_NAME);
+	ret = alloc_chrdev_region(&devno, 0, MAX_FSM_DP_DEVICE, FSM_DP_CDEV_NAME);
+
 	if (ret) {
 		FSM_DP_ERROR("%s: alloc_chrdev_region failed\n", __func__);
 		goto cleanup_class;
 	}
 
 	cdev_init(&pdrv->cdev, &fsm_dp_cdev_fops);
-	ret = cdev_add(&pdrv->cdev, devno, 1);
+	ret = cdev_add(&pdrv->cdev, devno, MAX_FSM_DP_DEVICE);
 	if (ret) {
 		FSM_DP_ERROR("%s: cdev_add failed!\n", __func__);
 		goto unregister_cdev;
 	}
-
-	dev = device_create(pdrv->dev_class, pdrv->dev, devno,
-			    pdrv, FSM_DP_CDEV_NAME);
-	if (IS_ERR(dev)) {
-		FSM_DP_ERROR("%s: device_create failed\n", __func__);
-		ret = PTR_ERR(dev);
-		goto del_cdev;
+	for (i = 1, p = pdrv + 1; i < MAX_FSM_DP_DEVICE; i++, p++) {
+		p->dev_class = pdrv->dev_class;
+		p->cdev = pdrv->cdev;
 	}
 
+	for (i = 0, p = pdrv, numdev = 0; i < MAX_FSM_DP_DEVICE; i++, p++) {
+		if (i == 0)
+			strlcpy(fsm_device_name, FSM_DP_CDEV_NAME,
+				sizeof(fsm_device_name));
+		else
+			snprintf(fsm_device_name, sizeof(fsm_device_name),
+				"%s%d", FSM_DP_CDEV_NAME, i + 1);
+		dev = device_create(p->dev_class, p->dev, MKDEV(MAJOR(devno), i),
+			    p, fsm_device_name);
+		if (IS_ERR(dev)) {
+			FSM_DP_ERROR("%s: %d-th fsm-dp device_create failed\n",
+				 __func__, i);
+			ret = PTR_ERR(dev);
+			dev = NULL;
+			goto del_cdev;
+		}
+		numdev++;
+	}
 	mutex_init(&pdrv->cdev_lock);
 	INIT_LIST_HEAD(&pdrv->cdev_head);
-
+	for (i = 1, p = pdrv + 1; i < MAX_FSM_DP_DEVICE; i++, p++) {
+		mutex_init(&p->cdev_lock);
+		INIT_LIST_HEAD(&p->cdev_head);
+	}
 	pr_info("FSM-DP: cdev initialized. __cdev_tx at 0x%p\n", __cdev_tx);
 	return 0;
 
 del_cdev:
+	for (i = 0; i < numdev; i++)
+		device_destroy(pdrv->dev_class,
+			MKDEV(MAJOR(pdrv->cdev.dev), i));
 	cdev_del(&pdrv->cdev);
 unregister_cdev:
-	unregister_chrdev_region(pdrv->cdev.dev, 1);
+	unregister_chrdev_region(pdrv->cdev.dev, MAX_FSM_DP_DEVICE);
 cleanup_class:
 	class_destroy(pdrv->dev_class);
 	pdrv->dev_class = NULL;
@@ -916,12 +949,19 @@ cleanup_class:
 
 void fsm_dp_cdev_cleanup(struct fsm_dp_drv *pdrv)
 {
+	struct fsm_dp_drv *p;
+	int i;
+
 	if (pdrv->dev_class) {
-		device_destroy(pdrv->dev_class, pdrv->cdev.dev);
+		for (i = 0; i < MAX_FSM_DP_DEVICE; i++)
+			device_destroy(pdrv->dev_class,
+				MKDEV(MAJOR(pdrv->cdev.dev), i));
 		cdev_del(&pdrv->cdev);
-		unregister_chrdev_region(pdrv->cdev.dev, 1);
+		unregister_chrdev_region(pdrv->cdev.dev, MAX_FSM_DP_DEVICE);
 		class_destroy(pdrv->dev_class);
-		mutex_destroy(&pdrv->cdev_lock);
-		pdrv->dev_class = NULL;
+		for (i = 0, p = pdrv; i < MAX_FSM_DP_DEVICE; i++, p++) {
+			mutex_destroy(&p->cdev_lock);
+			p->dev_class = NULL;
+		}
 	}
 }

@@ -1,4 +1,4 @@
-/* Copyright (c) 2019-2020, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2019-2021, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -666,7 +666,12 @@ static int debugfs_drv_status_show(struct seq_file *s, void *unused)
 {
 	struct fsm_dp_drv *drv = (struct fsm_dp_drv *)s->private;
 	struct fsm_dp_core_stats *stats = &drv->stats;
+	struct fsm_dp_mhi *mhi = &drv->mhi;
 
+	if (mhi->mhi_dev && !mhi->mhi_destroyed)
+		seq_printf(s, "MHIDevice: ON\n");
+	else
+		seq_printf(s, "MHIDevice: OFF\n");
 	seq_printf(s, "TX:             %lu\n", stats->tx_cnt);
 	seq_printf(s, "TX_ERR:         %lu\n", stats->tx_err);
 	seq_printf(s, "RX:             %lu\n", stats->rx_cnt);
@@ -1193,9 +1198,13 @@ static int debugfs_create_mempool_dir(
 	return 0;
 }
 
+/*pdrv pointing to an array of fsm_dp_drv. */
 int fsm_dp_debugfs_init(struct fsm_dp_drv *drv)
 {
 	struct dentry *entry = NULL;
+	struct dentry *dentry = NULL;
+	char string[10];
+	int i;
 
 	if (unlikely(drv == NULL))
 		return -EINVAL;
@@ -1207,43 +1216,51 @@ int fsm_dp_debugfs_init(struct fsm_dp_drv *drv)
 	if (IS_ERR(__dent))
 		return -ENOMEM;
 
+
 	entry = debugfs_create_file("driver", 0444, __dent, drv,
 				    &debugfs_drv_ops);
+
 	if (!entry)
 		goto err;
 
-	entry = debugfs_create_file("cdev", 0444, __dent, drv,
+
+	for (i = 0; i < MAX_FSM_DP_DEVICE; i++, drv++) {
+		snprintf(string, sizeof(string), "FSM-%d", i + 1);
+		dentry = debugfs_create_dir(string, __dent);
+		if (!dentry)
+			goto err;
+		entry = debugfs_create_file("cdev", 0444, dentry, drv,
 				    &debugfs_cdev_ops);
-	if (!entry)
-		goto err;
+		if (!entry)
+			goto err;
 
-	entry = debugfs_create_file("mhi", 0444, __dent, drv,
+		entry = debugfs_create_file("mhi", 0444, dentry, drv,
 				    &debugfs_mhi_ops);
-	if (!entry)
-		goto err;
+		if (!entry)
+			goto err;
 
-	entry = debugfs_create_file("status", 0444, __dent, drv,
+		entry = debugfs_create_file("status", 0444, dentry, drv,
 				    &debugfs_drv_status_ops);
-	if (!entry)
-		goto err;
+		if (!entry)
+			goto err;
 
-	if (debugfs_create_mempool_dir(__dent, drv))
-		goto err;
+		if (debugfs_create_mempool_dir(dentry, drv))
+			goto err;
 
-	if (debugfs_create_rxq_dir(__dent, drv))
-		goto err;
+		if (debugfs_create_rxq_dir(dentry, drv))
+			goto err;
 
-	if (debugfs_create_loopback_dir(__dent, drv))
-		goto err;
+		if (debugfs_create_loopback_dir(dentry, drv))
+			goto err;
 
-	if (debugfs_create_traffic_dir(__dent, drv))
-		goto err;
+		if (debugfs_create_traffic_dir(dentry, drv))
+			goto err;
 
 #ifdef CONFIG_FSM_DP_TEST
-	if (debugfs_create_testring_dir(__dent, drv))
-		goto err;
+		if (debugfs_create_testring_dir(dentry, drv))
+			goto err;
 #endif
-
+	}
 	return 0;
 err:
 	debugfs_remove_recursive(__dent);

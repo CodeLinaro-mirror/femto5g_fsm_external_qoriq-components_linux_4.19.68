@@ -1,4 +1,4 @@
-/* Copyright (c) 2019-2020, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2019-2021, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -603,6 +603,7 @@ void fsm_dp_deregister_kernel_client(
 };
 EXPORT_SYMBOL(fsm_dp_deregister_kernel_client);
 
+/* only supports the first FSM */
 void *fsm_dp_register_kernel_client(
 	enum fsm_dp_msg_type msg_type,
 	int (*tx_cmplt_cb)(struct sk_buff *skb),
@@ -757,35 +758,46 @@ int fsm_dp_tx(
 	return ret;
 }
 
+/* pdrv pointing to an array of fsm_dp_drv. */
 static int fsm_dp_core_init(struct fsm_dp_drv *pdrv)
 {
 	struct device *dev = pdrv->dev;
 	int ret;
+	struct fsm_dp_drv *p;
+	int i;
 
 	mutex_init(&pdrv->mempool_lock);
 
 	of_dma_configure(dev, dev->of_node, true);
 
-	ret = fsm_dp_rx_init(pdrv);
-	if (ret)
-		goto exit;
+	for (i = 0, p = pdrv; i < MAX_FSM_DP_DEVICE; i++, p++) {
+		ret = fsm_dp_rx_init(p);
+		if (ret)
+			goto exit;
 
-	ret = fsm_dp_loopback_init(&pdrv->loopback);
-	if (ret)
-		goto exit;
+		ret = fsm_dp_loopback_init(&p->loopback);
+		if (ret)
+			goto exit;
 
-	ret = fsm_dp_test_init(pdrv);
+		ret = fsm_dp_test_init(p);
+	}
 
 exit:
 	of_node_put(dev->of_node);
 	return ret;
 }
 
+/* pdrv pointing to an array of fsm_dp_drv. */
 static void fsm_dp_core_cleanup(struct fsm_dp_drv *pdrv)
 {
-	fsm_dp_rx_cleanup(pdrv);
-	fsm_dp_loopback_cleanup(&pdrv->loopback);
-	fsm_dp_test_cleanup(pdrv);
+	struct fsm_dp_drv *p;
+	int i;
+
+	for (i = 0, p = pdrv; i < MAX_FSM_DP_DEVICE; i++, p++) {
+		fsm_dp_rx_cleanup(p);
+		fsm_dp_loopback_cleanup(&p->loopback);
+		fsm_dp_test_cleanup(p);
+	}
 	kfree(pdrv);
 }
 
@@ -834,18 +846,22 @@ static void fsm_dp_alloc_work(struct work_struct *work)
 	} while (ret == -ENOMEM && retry);
 }
 
+/* pdrv pointing to an array of fsm_dp_drv. */
 static int fsm_dp_probe(struct platform_device *pdev)
 {
-	struct fsm_dp_drv *pdrv;
+	struct fsm_dp_drv *pdrv, *p;
 	int ret;
+	int i;
 
 	pr_info("FSM-DP: probing FSM\n");
 
-	pdrv = kzalloc(sizeof(*pdrv), GFP_KERNEL);
+	pdrv = kzalloc(MAX_FSM_DP_DEVICE * sizeof(*pdrv), GFP_KERNEL);
 	if (IS_ERR(pdrv))
 		return -ENOMEM;
 
-	pdrv->dev = &pdev->dev;
+	for (i = 0, p = pdrv; i < MAX_FSM_DP_DEVICE; i++, p++)
+		p->dev = &pdev->dev;
+
 	fsm_dp_pdrv = pdrv;
 
 	ret = fsm_dp_core_init(pdrv);
@@ -866,11 +882,13 @@ static int fsm_dp_probe(struct platform_device *pdev)
 
 	platform_set_drvdata(pdev, pdrv);
 
-	init_dummy_netdev(&pdrv->dummy_dev);
-	netif_napi_add(&pdrv->dummy_dev, &pdrv->napi, fsm_dp_poll,
+	for (i = 0, p = pdrv; i < MAX_FSM_DP_DEVICE; i++, p++) {
+		init_dummy_netdev(&p->dummy_dev);
+		netif_napi_add(&p->dummy_dev, &p->napi, fsm_dp_poll,
 						FSM_DP_NAPI_WEIGHT);
-	napi_enable(&pdrv->napi);
-	INIT_WORK(&pdrv->alloc_work, fsm_dp_alloc_work);
+		napi_enable(&p->napi);
+		INIT_WORK(&p->alloc_work, fsm_dp_alloc_work);
+	}
 
 	pr_info("FSM-DP: module initialized now\n");
 	return 0;
@@ -886,21 +904,26 @@ cleanup:
 	return ret;
 }
 
+/* pdrv pointing to an array of fsm_dp_drv. */
 static int fsm_dp_remove(struct platform_device *pdev)
 {
 	struct fsm_dp_drv *pdrv = platform_get_drvdata(pdev);
-
+	struct fsm_dp_drv *p;
+	int i;
 	if (pdrv) {
-		flush_work(&pdrv->alloc_work);
-		napi_disable(&pdrv->napi);
-		netif_napi_del(&pdrv->napi);
+		for (i = 0, p = pdrv; i < MAX_FSM_DP_DEVICE; i++, p++) {
+			if (p) {
+				flush_work(&p->alloc_work);
+				napi_disable(&p->napi);
+				netif_napi_del(&p->napi);
+			}
+		}
 		fsm_dp_cdev_cleanup(pdrv);
 		fsm_dp_mhi_cleanup(pdrv);
 		fsm_dp_debugfs_cleanup(pdrv);
 		fsm_dp_core_cleanup(pdrv);
 	}
 	fsm_dp_pdrv = NULL;
-
 	return 0;
 }
 

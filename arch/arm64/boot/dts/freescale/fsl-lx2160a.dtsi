@@ -1247,6 +1247,7 @@
 					<0000 0 0 2 &gic 0 0 GIC_SPI 120 IRQ_TYPE_LEVEL_HIGH>,
 					<0000 0 0 3 &gic 0 0 GIC_SPI 121 IRQ_TYPE_LEVEL_HIGH>,
 					<0000 0 0 4 &gic 0 0 GIC_SPI 122 IRQ_TYPE_LEVEL_HIGH>;
+			linux,pci-domain = <0>;
 			pcie_rc1: pcie_rc1@0,0 {
 				reg = <0 0 0 0 0>;
 			};
@@ -1325,6 +1326,7 @@
 					<0000 0 0 2 &gic 0 0 GIC_SPI 130 IRQ_TYPE_LEVEL_HIGH>,
 					<0000 0 0 3 &gic 0 0 GIC_SPI 131 IRQ_TYPE_LEVEL_HIGH>,
 					<0000 0 0 4 &gic 0 0 GIC_SPI 132 IRQ_TYPE_LEVEL_HIGH>;
+			linux,pci-domain = <1>;
 			pcie_rc2: pcie_rc2@0,0 {
 				reg = <0 0 0 0 0>;
 			};

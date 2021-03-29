@@ -1,4 +1,4 @@
-/* Copyright (c) 2019-2020, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2019-2021, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -39,6 +39,7 @@ static int fsm_tti_intr_cdev_open(
 	struct inode *inode,
 	struct file *file)
 {
+	unsigned int minor;
 	struct fsm_tti_intr_drv *tti_drv_cntx = container_of(inode->i_cdev,
 		struct fsm_tti_intr_drv, cdev);
 
@@ -47,6 +48,13 @@ static int fsm_tti_intr_cdev_open(
 			__func__);
 		return -ENOMEM;
 	}
+	minor = iminor(inode);
+	if (minor >=  MAX_FSM_TTI_DEVICE) {
+		pr_err("device minor number %d should not be greater than 1\n",
+			minor);
+		return -EINVAL;
+	}
+	tti_drv_cntx += minor;
 
 	FSM_TTI_INFO("FSM-TTI: %s: shared ptr:%p allocated\n", __func__,
 		tti_drv_cntx->shared_data);
@@ -156,8 +164,7 @@ static int fsm_tti_intr_cdev_mmap(
 
 	ret = remap_pfn_range(vma,
 			vma->vm_start,
-			virt_to_phys(
-			(void *)tti_drv_cntx->shared_data)>>PAGE_SHIFT,
+			page_to_pfn(tti_drv_cntx->page),
 			(vma->vm_end - vma->vm_start),
 			vma->vm_page_prot);
 	if (ret) {
@@ -182,6 +189,10 @@ int fsm_tti_cdev_init(struct fsm_tti_intr_drv *tti_intr_drv)
 	int ret = 0;
 	dev_t devno;
 	struct device *dev;
+	int i;
+	unsigned int num_fsm;
+	struct fsm_tti_intr_drv *p;
+	char fsm_device_name[256];
 
 	if (IS_ERR(tti_intr_drv)) {
 		FSM_TTI_ERROR("FSM-TTI: %s: driver context not allocated\n",
@@ -197,7 +208,8 @@ int fsm_tti_cdev_init(struct fsm_tti_intr_drv *tti_intr_drv)
 		return -ENOMEM;
 	}
 
-	ret = alloc_chrdev_region(&devno, 0, 1, FSM_TTI_CDEV_NAME);
+	ret = alloc_chrdev_region(&devno, 0, MAX_FSM_TTI_DEVICE,
+					FSM_TTI_CDEV_NAME);
 	if (ret) {
 		FSM_TTI_ERROR("FSM-TTI: %s: alloc_chrdev_region failed\n",
 			__func__);
@@ -205,24 +217,39 @@ int fsm_tti_cdev_init(struct fsm_tti_intr_drv *tti_intr_drv)
 	}
 
 	cdev_init(&tti_intr_drv->cdev, &fsm_tti_intr_cdev_fops);
-	ret = cdev_add(&tti_intr_drv->cdev, devno, 1);
+	ret = cdev_add(&tti_intr_drv->cdev, devno, MAX_FSM_TTI_DEVICE);
 	if (ret) {
 		FSM_TTI_ERROR("FSM-TTI: %s: cdev_add failed!\n", __func__);
 		goto unregister_cdev;
 	}
 
-	dev = device_create(tti_intr_drv->dev_class, tti_intr_drv->dev, devno,
-			    tti_intr_drv, FSM_TTI_CDEV_NAME);
-	if (IS_ERR(dev)) {
-		FSM_TTI_ERROR("FSM-TTI: %s: device_create failed\n", __func__);
-		ret = PTR_ERR(dev);
-		goto del_cdev;
+	for (i = 0, p = tti_intr_drv, num_fsm = 0; i < tti_intr_drv->num_fsm;
+							i++, num_fsm++, p++) {
+		p->dev_class = tti_intr_drv->dev_class;
+		p->cdev = tti_intr_drv->cdev;
+		if (i == 0)
+			strlcpy(fsm_device_name, FSM_TTI_CDEV_NAME,
+				sizeof(fsm_device_name));
+		else
+			snprintf(fsm_device_name, sizeof(fsm_device_name),
+				"%s%s%d", FSM_TTI_CDEV_NAME, "_", i + 1);
+		dev = device_create(p->dev_class, p->dev,
+			MKDEV(MAJOR(devno), i), p, fsm_device_name);
+		if (IS_ERR(dev)) {
+			FSM_TTI_ERROR("FSM-TTI: %s: device_create failed\n",
+								__func__);
+			ret = PTR_ERR(dev);
+			goto del_cdev;
+		}
 	}
 
 	FSM_TTI_INFO("FSM-TTI: cdev initialized\n");
 	return 0;
 
 del_cdev:
+	for (i = 0; i < num_fsm; i++)
+		device_destroy(tti_intr_drv->dev_class,
+			MKDEV(MAJOR(tti_intr_drv->cdev.dev), i));
 	cdev_del(&tti_intr_drv->cdev);
 unregister_cdev:
 	unregister_chrdev_region(tti_intr_drv->cdev.dev, 1);
@@ -235,8 +262,12 @@ cleanup_class:
 
 void fsm_tti_cdev_cleanup(struct fsm_tti_intr_drv *tti_intr_drv)
 {
+	int i;
+
 	if (tti_intr_drv->dev_class) {
-		device_destroy(tti_intr_drv->dev_class, tti_intr_drv->cdev.dev);
+		for (i = 0; i < tti_intr_drv->num_fsm; i++)
+			device_destroy(tti_intr_drv->dev_class,
+				MKDEV(MAJOR(tti_intr_drv->cdev.dev), i));
 		cdev_del(&tti_intr_drv->cdev);
 		unregister_chrdev_region(tti_intr_drv->cdev.dev, 1);
 		class_destroy(tti_intr_drv->dev_class);

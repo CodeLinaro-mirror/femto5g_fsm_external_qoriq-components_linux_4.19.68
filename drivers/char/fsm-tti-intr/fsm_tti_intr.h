@@ -1,4 +1,4 @@
-/* Copyright (c) 2019-2020, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2019-2021, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -35,6 +35,8 @@
 #define FSM_TTI_PAGE_SIZE	PAGE_SIZE
 #define FSM_TTI_MAX_NAME_LEN	32
 
+#define MAX_FSM_TTI_DEVICE 2
+
 /* Info for tti interrupt gpio platform */
 struct fsm_tti_gpio_platform_data {
 	bool assert_falling_edge;
@@ -56,6 +58,7 @@ struct fsm_tti_intr_drv {
 	struct device *dev;
 	struct class *dev_class;
 	struct cdev cdev;
+	struct page *page;
 	bool is_poll_enabled;
 	bool is_seeding_done;
 	atomic_t tti_updated;
@@ -64,6 +67,7 @@ struct fsm_tti_intr_drv {
 	struct fsm_tti_gpio_device_data *device_data;
 	struct fsm_tti_mmap_info *shared_data;
 	struct fsm_tti_internal_stats debugfs_stats;
+	unsigned int num_fsm;
 };
 
 int fsm_tti_cdev_init(struct fsm_tti_intr_drv *tti_intr_drv);

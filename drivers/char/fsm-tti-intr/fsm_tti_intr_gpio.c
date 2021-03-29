@@ -1,4 +1,4 @@
-/* Copyright (c) 2019-2020, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2019-2021, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -10,6 +10,7 @@
  * GNU General Public License for more details.
  */
 #include <linux/of.h>
+#include <linux/mm.h>
 #include <linux/err.h>
 #include <linux/gpio.h>
 #include <linux/device.h>
@@ -70,123 +71,129 @@ static irqreturn_t fsm_tti_gpio_irq_handler(int irq, void *irq_data)
 static int __init fsm_tti_intr_probe(struct platform_device *pdev)
 {
 	int ret;
+	struct page *page;
 	unsigned long flags;
-	const char *gpio_label;
 	struct device_node *np;
 	struct fsm_tti_intr_drv *tti_intr_drv;
-	struct fsm_tti_gpio_platform_data *platform_data =
-		pdev->dev.platform_data;
+	struct fsm_tti_gpio_device_data *device_data;
+	struct fsm_tti_intr_drv *p;
+	bool assert_falling_edge = false;
+	int gpio_pin = -1;
+	int num_fsm = 0;
+	struct fsm_tti_mmap_info *sdata;
+	char gpio_label[256];
+	int i;
 
 	FSM_TTI_INFO("FSM-TTI: probing device\n");
 
-	tti_intr_drv = kzalloc(sizeof(*tti_intr_drv), GFP_KERNEL);
+	tti_intr_drv = kzalloc(sizeof(*tti_intr_drv) * MAX_FSM_TTI_DEVICE,
+					GFP_KERNEL);
 	if (IS_ERR(tti_intr_drv))
 		return -ENOMEM;
-
-	tti_intr_drv->dev = &pdev->dev;
-
 	np = pdev->dev.of_node;
 	if (!np) {
 		kfree(tti_intr_drv);
 		return -ENOENT;
 	}
-
 	/* allocate space for device info */
-	tti_intr_drv->device_data = devm_kzalloc(&pdev->dev,
-				sizeof(struct fsm_tti_gpio_device_data),
-				GFP_KERNEL);
-	if (!tti_intr_drv->device_data) {
+	device_data = devm_kzalloc(&pdev->dev, MAX_FSM_TTI_DEVICE *
+			sizeof(struct fsm_tti_gpio_device_data), GFP_KERNEL);
+	if (!device_data) {
 		kfree(tti_intr_drv);
 		return -ENOMEM;
 	}
+	if (of_get_property(np, "assert-falling-edge", NULL))
+		assert_falling_edge = true;
 
-	if (platform_data) {
-		/* update the device info to the driver context */
-		tti_intr_drv->device_data->gpio_pin =
-			platform_data->gpio_pin;
-		tti_intr_drv->device_data->assert_falling_edge =
-			platform_data->assert_falling_edge;
-		tti_intr_drv->device_data->capture_clear =
-			platform_data->capture_clear;
-		gpio_label = platform_data->gpio_label;
-	} else {
-		/* read device tree information */
-		ret = of_get_gpio(np, 0);
-		if (ret < 0) {
-			dev_err(&pdev->dev,
-				"failed to get GPIO from device tree\n");
-			goto cleanup;
-
-		}
-		tti_intr_drv->device_data->gpio_pin = ret;
-		gpio_label = FSM_TTI_GPIO_NAME;
-
-		if (of_get_property(np, "assert-falling-edge", NULL))
-			tti_intr_drv->device_data->assert_falling_edge = true;
-	}
-
-	/* GPIO setup */
-	ret = devm_gpio_request(&pdev->dev,
-				tti_intr_drv->device_data->gpio_pin,
+	for (i = 0, p = tti_intr_drv; i < MAX_FSM_TTI_DEVICE; i++, p++) {
+		p->dev = &pdev->dev;
+		p->device_data =  device_data + i;
+		/* read DTS to determine number of FSM */
+		gpio_pin = of_get_gpio(np, i);
+		if (gpio_pin < 0)
+			goto probe_cont;
+		p->device_data->gpio_pin = gpio_pin;
+		if (i == 0)
+			strlcpy(gpio_label, FSM_TTI_GPIO_NAME,
+				sizeof(gpio_label));
+		else
+			snprintf(gpio_label, sizeof(gpio_label),
+				"%s_%d", FSM_TTI_GPIO_NAME, i + 1);
+		p->device_data->assert_falling_edge = assert_falling_edge;
+		/* GPIO setup */
+		ret = devm_gpio_request(&pdev->dev,
+				p->device_data->gpio_pin,
 				gpio_label);
-	if (ret) {
-		dev_err(&pdev->dev, "failed to request GPIO %u\n",
-			tti_intr_drv->device_data->gpio_pin);
-		goto cleanup;
-	}
-
-	ret = gpio_direction_input(tti_intr_drv->device_data->gpio_pin);
-	if (ret) {
-		dev_err(&pdev->dev, "failed to set pin direction\n");
-		goto cleanup;
-	}
-
-	/* IRQ setup */
-	ret = gpio_to_irq(tti_intr_drv->device_data->gpio_pin);
-	if (ret < 0) {
-		dev_err(&pdev->dev, "failed to map GPIO to IRQ: %d\n", ret);
-		goto cleanup;
-	}
-	tti_intr_drv->device_data->irq = ret;
-
-	/* interrupt handler flow type */
-	flags = tti_intr_drv->device_data->assert_falling_edge ?
-		IRQF_TRIGGER_FALLING : IRQF_TRIGGER_RISING;
-	if (tti_intr_drv->device_data->capture_clear) {
-		flags |= ((flags & IRQF_TRIGGER_RISING) ?
+		if (ret) {
+			dev_err(&pdev->dev, "failed to request GPIO %u\n",
+				p->device_data->gpio_pin);
+			goto cleanup_shared_data;
+		}
+		ret = gpio_direction_input(p->device_data->gpio_pin);
+		if (ret) {
+			dev_err(&pdev->dev, "failed to set pin direction\n");
+			goto cleanup_shared_data;
+		}
+		ret = gpio_to_irq(p->device_data->gpio_pin);
+		if (ret < 0) {
+			dev_err(&pdev->dev, "failed to map GPIO to IRQ: %d\n",
+					ret);
+			goto cleanup_shared_data;
+		}
+		p->device_data->irq = ret;
+		flags = p->device_data->assert_falling_edge ?
+			IRQF_TRIGGER_FALLING : IRQF_TRIGGER_RISING;
+		if (p->device_data->capture_clear) {
+			flags |= ((flags & IRQF_TRIGGER_RISING) ?
 				IRQF_TRIGGER_FALLING : IRQF_TRIGGER_RISING);
-	}
-
-	/* prepare a device name */
-	snprintf(tti_intr_drv->device_data->name,
-		FSM_TTI_MAX_NAME_LEN - 1,
-		"%s.%d",
-		pdev->name, pdev->id);
-
-	/* register IRQ interrupt handler */
-	ret = devm_request_irq(&pdev->dev,
-				tti_intr_drv->device_data->irq,
+		}
+		if (i == 0)
+			snprintf(p->device_data->name,
+				FSM_TTI_MAX_NAME_LEN - 1,
+				"%s.%d",
+				pdev->name, pdev->id);
+		else
+			snprintf(p->device_data->name,
+				FSM_TTI_MAX_NAME_LEN - 1,
+				"%s.%d_%d",
+				pdev->name, pdev->id, i + 1);
+		ret = devm_request_irq(&pdev->dev,
+				p->device_data->irq,
 				fsm_tti_gpio_irq_handler,
 				flags,
-				tti_intr_drv->device_data->name,
-				tti_intr_drv);
-	if (ret) {
-		dev_err(&pdev->dev, "failed to acquire IRQ %d\n",
+				p->device_data->name,
+				p);
+		if (ret) {
+			dev_err(&pdev->dev, "failed to acquire IRQ %d\n",
 			tti_intr_drv->device_data->irq);
-		goto cleanup;
+			goto cleanup_shared_data;
+		}
+		page = alloc_page(GFP_KERNEL);
+		if (page) {
+			p->page = page;
+			p->shared_data =
+				(struct fsm_tti_mmap_info *)page_address(page);
+			sdata = p->shared_data;
+			sdata->sfn_slot_info.sfn_slot = 0xdeadbeef;
+		} else
+			goto cleanup_shared_data;
+		/* initialize wait queue */
+		init_waitqueue_head(&p->tti_poll_waitqueue);
+		/* initialize the flags */
+		atomic_set(&p->tti_updated, 0);
+		p->is_seeding_done = false;
+		p->is_poll_enabled = false;
+		p->is_first_tti_intr = false;
+		num_fsm++;
 	}
-
+probe_cont:
 	/* keep a driver reference to the device structure */
+	if (!num_fsm)
+		goto cleanup;
 	platform_set_drvdata(pdev, tti_intr_drv);
 
-	/* allocate shared data */
-	tti_intr_drv->shared_data = kzalloc(PAGE_SIZE, GFP_KERNEL);
-	if (IS_ERR(tti_intr_drv->shared_data)) {
-		FSM_TTI_ERROR("FSM-TTI: %s: failed to alloc shared memory\n",
-			__func__);
-		ret = -ENOMEM;
-		goto cleanup;
-	}
+	for (i = 0, p = tti_intr_drv; i < num_fsm; i++, p++)
+		p->num_fsm = num_fsm;
 
 	/* initialize char interface to userspace */
 	ret = fsm_tti_cdev_init(tti_intr_drv);
@@ -197,13 +204,6 @@ static int __init fsm_tti_intr_probe(struct platform_device *pdev)
 	if (ret)
 		goto cleanup_cdev;
 
-	/* initialize wait queue */
-	init_waitqueue_head(&tti_intr_drv->tti_poll_waitqueue);
-	/* initialize the flags */
-	atomic_set(&tti_intr_drv->tti_updated, 0);
-	tti_intr_drv->is_seeding_done = false;
-	tti_intr_drv->is_poll_enabled = false;
-	tti_intr_drv->is_first_tti_intr = false;
 
 	FSM_TTI_INFO("FSM-TTI: module initialized\n");
 	return 0;
@@ -211,9 +211,15 @@ static int __init fsm_tti_intr_probe(struct platform_device *pdev)
 cleanup_cdev:
 	fsm_tti_cdev_cleanup(tti_intr_drv);
 cleanup_shared_data:
-	kfree(tti_intr_drv->shared_data);
-	tti_intr_drv->shared_data = NULL;
+	for (i = 0, p = tti_intr_drv; i < num_fsm; i++, p++)
+		if (p->page) {
+			__free_page(p->page);
+		p->page = NULL;
+		p->shared_data = NULL;
+		p->shared_data = NULL;
+	}
 cleanup:
+	devm_kfree(&pdev->dev, device_data);
 	kfree(tti_intr_drv);
 	FSM_TTI_ERROR("FSM-TTI: module init failed!\n");
 	return ret;
@@ -222,12 +228,20 @@ cleanup:
 static int __exit fsm_tti_intr_remove(struct platform_device *pdev)
 {
 	struct fsm_tti_intr_drv *tti_intr_drv = platform_get_drvdata(pdev);
+	struct fsm_tti_intr_drv *p;
+	int i;
 
 	if (tti_intr_drv) {
 		fsm_tti_debugfs_cleanup(tti_intr_drv);
 		fsm_tti_cdev_cleanup(tti_intr_drv);
-		kfree(tti_intr_drv->shared_data);
-		tti_intr_drv->shared_data = NULL;
+		for (i = 0, p = tti_intr_drv; i < tti_intr_drv->num_fsm;
+						i++, p++) {
+			if (p->page)
+				__free_page(p->page);
+			p->page = NULL;
+			p->shared_data = NULL;
+		}
+		devm_kfree(&pdev->dev, tti_intr_drv->device_data);
 		kfree(tti_intr_drv);
 	}
 	FSM_TTI_INFO("FSM-TTI: module removed\n");

@@ -701,11 +701,14 @@
 		gpios = <&gpio3 18 0>;
 		assert-falling-edge;
 		compatible = "pps-gpio";
-		status = "okay";
+		status = "disabled";
 	};
 
 	tti {
-		gpios = <&gpio3 17 0>;
+		gpios = <
+			&gpio3 17 0 /*FSM 1 */
+			&gpio3 18 0 /*FSM 2 */
+			>;
 		assert-falling-edge;
 		compatible = "tti-gpio";
 		status = "okay";

@@ -1,4 +1,4 @@
-/* Copyright (c) 2019-2020, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2019-2021, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -67,6 +67,10 @@ DEFINE_DEBUGFS_OPS(debugfs_tti_status, debugfs_tti_status_show, NULL);
 int fsm_tti_debugfs_init(struct fsm_tti_intr_drv *tti_intr_drv)
 {
 	struct dentry *entry = NULL;
+	struct dentry *dentry = NULL;
+	int i;
+	char string[10];
+	struct fsm_tti_intr_drv *p;
 
 	if (IS_ERR(tti_intr_drv)) {
 		FSM_TTI_ERROR("FSM-TTI: %s: driver context not allocated\n",
@@ -78,14 +82,20 @@ int fsm_tti_debugfs_init(struct fsm_tti_intr_drv *tti_intr_drv)
 	if (IS_ERR(__dent))
 		return -ENOMEM;
 
-	entry = debugfs_create_file("stat", 0444, __dent,
-			tti_intr_drv, &debugfs_tti_status_ops);
-	if (!entry)
-		goto error;
+	p = tti_intr_drv;
 
-	/* initialize the debugfs stat structure*/
-	memset(&tti_intr_drv->debugfs_stats, 0,
-		sizeof(struct fsm_tti_internal_stats));
+	for (i = 0; i < MAX_FSM_TTI_DEVICE; i++, p++) {
+		snprintf(string, sizeof(string), "FSM-%d", i + 1);
+		dentry = debugfs_create_dir(string, __dent);
+		entry = debugfs_create_file("stat", 0444, dentry,
+				p, &debugfs_tti_status_ops);
+		if (!entry)
+			goto error;
+
+		/* initialize the debugfs stat structure*/
+		memset(&p->debugfs_stats, 0,
+			sizeof(struct fsm_tti_internal_stats));
+	}
 
 	FSM_TTI_INFO("FSM-TTI: debugfs initialized\n");
 	return 0;

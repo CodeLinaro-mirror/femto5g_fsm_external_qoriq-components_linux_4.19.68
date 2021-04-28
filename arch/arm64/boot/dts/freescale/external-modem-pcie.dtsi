@@ -395,7 +395,7 @@
 
 		mhi_event@4 {
 			reg = <4>;
-			mhi,num-elements = <2048>;
+			mhi,num-elements = <3072>;
 			mhi,intmod = <0x80005>;
 			mhi,msi = <5>;
 			mhi,chan = <100>;
@@ -406,7 +406,7 @@
 
 		mhi_event@5 {
 			reg = <5>;
-			mhi,num-elements = <2048>;
+			mhi,num-elements = <3072>;
 			mhi,intmod = <0x80001>;
 			mhi,msi = <6>;
 			mhi,chan = <101>;

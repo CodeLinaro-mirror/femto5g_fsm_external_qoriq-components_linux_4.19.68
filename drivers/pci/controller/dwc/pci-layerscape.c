@@ -200,7 +200,6 @@ static int ls_pcie_msi_host_init(struct pcie_port *pp)
 		dev_err(dev, "failed to find msi-parent\n");
 		return -EINVAL;
 	}
-
 	return 0;
 }
 
@@ -294,20 +293,32 @@ static int __init ls_add_pcie_port(struct ls_pcie *pcie)
 		dev_err(dev, "failed to initialize host\n");
 		return ret;
 	}
-
 	return 0;
 }
 
-static void __iomem *dw_pci_space;
-static struct device *dw_pcie_dev;
-static bool dw_can_force3;
-static u32 dw_svr;
 #define SYSTEM_VERSION_REG      0xA4
 #define NXP_BOARD_INFO          0x1E00000
 #define NXP_BOARD_INFO_SIZE     0x100
 #define NXP_LX_BOARD            0x87360000
 
-#define NXP_PCIE1_ADDR		0x3600000
+#define NXP_PCIE1_ADDR		0x3600000 /* slot 1 */
+#define NXP_PCIE2_ADDR		0x3800000 /* slot 2 */
+
+#define NXP_LX_MAX_SLOT		2
+struct lx_force_config {
+	u32 pcie_addr;
+	u32 force3_cfg;
+	bool can_force3;
+	u32 domain;
+	void __iomem *dw_pci_space;
+	struct device *dw_pcie_dev;
+};
+
+/* force configuration, indexed by domain */
+struct lx_force_config lx_force_config[NXP_LX_MAX_SLOT] = {
+	{NXP_PCIE1_ADDR, 0x80, 0, 0, NULL, NULL},
+	{NXP_PCIE2_ADDR, 0x40, 0, 1, NULL, NULL}
+};
 
 static int __init ls_pcie_probe(struct platform_device *pdev)
 {
@@ -316,6 +327,12 @@ static int __init ls_pcie_probe(struct platform_device *pdev)
 	struct ls_pcie *pcie;
 	struct resource *dbi_base;
 	int ret;
+	u32 dw_svr;
+
+	unsigned int pci_domain = NXP_LX_MAX_SLOT;
+	struct device *dw_pcie_dev;
+	void __iomem *dw_pci_space;
+	bool can_force3 = false;
 
 	pcie = devm_kzalloc(dev, sizeof(*pcie), GFP_KERNEL);
 	if (!pcie)
@@ -330,6 +347,7 @@ static int __init ls_pcie_probe(struct platform_device *pdev)
 	pci->dev = dev;
 	pci->ops = pcie->drvdata->dw_pcie_ops;
 
+
 	pcie->pci = pci;
 
 	dbi_base = platform_get_resource_byname(pdev, IORESOURCE_MEM, "regs");
@@ -339,21 +357,36 @@ static int __init ls_pcie_probe(struct platform_device *pdev)
 
 	pcie->lut = pci->dbi_base + pcie->drvdata->lut_offset;
 
-	if (dbi_base->start == NXP_PCIE1_ADDR) {
+	ret = of_property_read_u32(dev->of_node, "linux,pci-domain",
+			&pci_domain);
+	if (dbi_base->start == NXP_PCIE1_ADDR ||
+		dbi_base->start == NXP_PCIE2_ADDR) {
 		void __iomem *nxp_board_cntrl;
 
 		dw_pci_space = pci->dbi_base;
 		dw_pcie_dev = dev;
 		nxp_board_cntrl = devm_ioremap_nocache(dw_pcie_dev,
-											   NXP_BOARD_INFO,
-											   NXP_BOARD_INFO_SIZE);
+			   NXP_BOARD_INFO,
+			   NXP_BOARD_INFO_SIZE);
 		dw_svr = readl(nxp_board_cntrl +  SYSTEM_VERSION_REG);
-		if ((dw_svr & 0xffff0000) == NXP_LX_BOARD)
-			dw_can_force3 = true;
+		if ((dw_svr & 0xffff0000) == NXP_LX_BOARD &&
+				(ret == 0 && pci_domain < NXP_LX_MAX_SLOT))
+			can_force3 = true;
 		pr_info("%s: NXP board %x, dbi_base  %p can_force3 %d\n",
-				__func__,  dw_svr, dw_pci_space, dw_can_force3);
+				__func__,  dw_svr, dw_pci_space, can_force3);
 		devm_iounmap(dw_pcie_dev, nxp_board_cntrl);
 	}
+
+	if (can_force3) {
+		pr_info("%s domain %d address %llx can be forced to Gen3\n",
+			__func__, pci_domain, dbi_base->start);
+		lx_force_config[pci_domain].pcie_addr = dbi_base->start;
+		lx_force_config[pci_domain].can_force3 = true;
+		lx_force_config[pci_domain].domain = pci_domain;
+		lx_force_config[pci_domain].dw_pci_space = dw_pci_space;
+		lx_force_config[pci_domain].dw_pcie_dev = dw_pcie_dev;
+	}
+
 	if (!ls_pcie_is_bridge(pcie))
 		return -ENODEV;
 
@@ -369,7 +402,7 @@ static int __init ls_pcie_probe(struct platform_device *pdev)
 #include <linux/i2c.h>
 #include <linux/i2c-dev.h>
 
-static bool lx_pcie_reset_force3(void)
+static bool lx_pcie_reset_force3(unsigned int domain)
 {
 #define NXP_LX_PCIE_CPLD_SLAVE_ADDR 0x66
 #define NXP_LX_PCIE_FORCE_3_REG 0x45
@@ -388,11 +421,14 @@ static bool lx_pcie_reset_force3(void)
 	unsigned char buf[2];
 	struct i2c_adapter *i2c_a;
 	int ret;
+	void __iomem *dw_pci_space;
 
-	if (!dw_can_force3) {
-		pr_err("The current NXP board %x does not support life PCIe reset\n", dw_svr);
+	if (domain >= NXP_LX_MAX_SLOT || !lx_force_config[domain].can_force3) {
+		pr_err("The current NXP board PCIe domain %d "
+			"does not support live PCIe reset\n", domain);
 		return false;
 	}
+	dw_pci_space = lx_force_config[domain].dw_pci_space;
 	lx_cpld_reset_r_msg[0].addr = NXP_LX_PCIE_CPLD_SLAVE_ADDR;
 	lx_cpld_reset_r_msg[0].flags = 0;
 	lx_cpld_reset_r_msg[0].len = sizeof(reset_reg);
@@ -433,7 +469,7 @@ static bool lx_pcie_reset_force3(void)
 	}
 	pr_info("%s: read force3 reg val %x\n", __func__, reset_byte);
 
-	buf[1] = 0x80;
+	buf[1] = lx_force_config[domain].force3_cfg;
 	ret = i2c_transfer(i2c_a, &lx_cpld_reset_w_msg, 1);
 	if (ret < 0) {
 		pr_err("%s: i2c_transfer write error ret %d\n", __func__, ret);
@@ -482,13 +518,10 @@ static bool lx_pcie_reset_force3(void)
 	return true;
 }
 
-typedef bool (*pcie_reset_force_func)(void);
+typedef bool (*pcie_reset_force_func)(unsigned int);
 pcie_reset_force_func get_pcie_reset_force_func(void)
 {
-	if (dw_can_force3)
-		return  lx_pcie_reset_force3;
-	else
-		return NULL;
+	return  lx_pcie_reset_force3;
 }
 EXPORT_SYMBOL(get_pcie_reset_force_func);
 

@@ -423,7 +423,7 @@ int mhi_pm_m3_transition(struct mhi_controller *mhi_cntrl)
 
 extern int mhi_arch_link_resume(struct mhi_controller *mhi_cntrl);
 extern int mhi_arch_link_suspend(struct mhi_controller *mhi_cntrl);
-typedef bool (*pcie_reset_force_func)(void);
+typedef bool (*pcie_reset_force_func)(unsigned int);
 pcie_reset_force_func get_pcie_reset_force_func(void);
 
 static int mhi_pm_mission_mode_transition(struct mhi_controller *mhi_cntrl)
@@ -431,7 +431,7 @@ static int mhi_pm_mission_mode_transition(struct mhi_controller *mhi_cntrl)
 	int i;
 	struct mhi_event *mhi_event;
 	int ret;
-	bool (*force_pcie_reset)(void);
+	pcie_reset_force_func force_pcie_reset;
 
 	MHI_LOG("Processing Mission Mode Transition\n");
 
@@ -487,7 +487,7 @@ static int mhi_pm_mission_mode_transition(struct mhi_controller *mhi_cntrl)
 	mhi_arch_link_suspend(mhi_cntrl);
 	mdelay(100);
 
-	if (!((*force_pcie_reset)()))
+	if (!((*force_pcie_reset)(mhi_cntrl->domain)))
 		pr_err("can not force PCIe reset\n");
 	mdelay(100);
 

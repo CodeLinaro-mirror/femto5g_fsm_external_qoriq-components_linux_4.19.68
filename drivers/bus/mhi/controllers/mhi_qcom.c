@@ -1,4 +1,4 @@
-/* Copyright (c) 2018-2019, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2018-2019,2021, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -25,6 +25,11 @@
 #include <linux/mhi.h>
 #include "mhi_qcom.h"
 
+struct arch_info {
+	struct mhi_dev *mhi_dev;
+	struct pci_saved_state *pcie_saved_state;
+};
+
 struct firmware_info {
 	unsigned int dev_id;
 	const char *fw_image;
@@ -40,10 +45,10 @@ static const struct firmware_info firmware_table[] = {
 static int debug_mode;
 module_param_named(debug_mode, debug_mode, int, 0644);
 
-struct pci_saved_state *pci_saved_state;
 int mhi_arch_link_suspend(struct mhi_controller *mhi_cntrl)
 {
 	struct mhi_dev *mhi_dev = mhi_controller_get_devdata(mhi_cntrl);
+	struct arch_info *arch_info = mhi_dev->arch_info;
 	struct pci_dev *pci_dev = mhi_dev->pci_dev;
 	int ret = 0;
 
@@ -53,7 +58,7 @@ int mhi_arch_link_suspend(struct mhi_controller *mhi_cntrl)
 		MHI_ERR("Failed with pci_save_state, ret:%d\n", ret);
 		goto exit_suspend;
 	}
-	pci_saved_state = pci_store_saved_state(pci_dev);
+	arch_info->pcie_saved_state = pci_store_saved_state(pci_dev);
 	pci_disable_device(pci_dev);
 	pci_set_power_state(pci_dev, PCI_D3hot);
 exit_suspend:
@@ -65,6 +70,7 @@ exit_suspend:
 int mhi_arch_link_resume(struct mhi_controller *mhi_cntrl)
 {
 	struct mhi_dev *mhi_dev = mhi_controller_get_devdata(mhi_cntrl);
+	struct arch_info *arch_info = mhi_dev->arch_info;
 	struct pci_dev *pci_dev = mhi_dev->pci_dev;
 	int ret;
 
@@ -80,7 +86,7 @@ int mhi_arch_link_resume(struct mhi_controller *mhi_cntrl)
 		return ret;
 	}
 
-	ret = pci_load_and_free_saved_state(pci_dev, &pci_saved_state);
+	ret = pci_load_and_free_saved_state(pci_dev, &arch_info->pcie_saved_state);
 	if (ret)
 		MHI_LOG("Failed to load saved cfg state\n");
 
@@ -559,6 +565,25 @@ error_register:
 	mhi_free_controller(mhi_cntrl);
 
 	return ERR_PTR(-EINVAL);
+}
+
+static int mhi_arch_pcie_init(struct mhi_controller *mhi_cntrl)
+{
+	struct mhi_dev *mhi_dev = mhi_controller_get_devdata(mhi_cntrl);
+	struct arch_info *arch_info = mhi_dev->arch_info;
+	int ret = 0;
+
+	if (!arch_info) {
+		arch_info = devm_kzalloc(&mhi_dev->pci_dev->dev,
+				sizeof(*arch_info), GFP_KERNEL);
+		if (!arch_info)
+			return -ENOMEM;
+
+		mhi_dev->arch_info = arch_info;
+		arch_info->mhi_dev = mhi_dev;
+	}
+
+	return ret;
 }
 
 int mhi_pci_probe(struct pci_dev *pci_dev,

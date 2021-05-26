@@ -220,15 +220,17 @@
 		dma-coherent;
 		bus-range = <0x0 0xff>;
 		msi-parent = <&its>;
-		iommu-map = <0 &smmu 0 1>;	/* This is fixed-up by u-boot */
+		msi-map = <0x00 0x17 0x08 0x01 0x100 0x17 0x0a 0x01>;
+		msi-map-mask = <0xffffffff>;
+		iommu-map = <0x00 0x18 0x08 0x01 0x100 0x18
+				0x0a 0x01>; /* This is fixed-up by u-boot */
 		#interrupt-cells = <1>;
 		interrupt-map-mask = <0 0 0 7>;
 		interrupt-map = <0000 0 0 1 &gic 0 0 0 124 4>,
 				<0000 0 0 2 &gic 0 0 0 125 4>,
 				<0000 0 0 3 &gic 0 0 0 126 4>,
 				<0000 0 0 4 &gic 0 0 0 127 4>;
-		status = "disabled";
-
+		linux,pci-domain = <1>;
 		pcie_rc2: pcie_rc2@0,0 {
 			reg = <0 0 0 0 0>;
 		};

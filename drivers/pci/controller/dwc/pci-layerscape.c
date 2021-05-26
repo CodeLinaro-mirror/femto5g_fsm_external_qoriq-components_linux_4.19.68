@@ -313,6 +313,7 @@ struct lx_force_config {
 	void __iomem *dw_pci_space;
 	struct device *dw_pcie_dev;
 };
+static u32 dw_svr;
 
 /* force configuration, indexed by domain */
 struct lx_force_config lx_force_config[NXP_LX_MAX_SLOT] = {
@@ -327,7 +328,6 @@ static int __init ls_pcie_probe(struct platform_device *pdev)
 	struct ls_pcie *pcie;
 	struct resource *dbi_base;
 	int ret;
-	u32 dw_svr;
 
 	unsigned int pci_domain = NXP_LX_MAX_SLOT;
 	struct device *dw_pcie_dev;
@@ -521,7 +521,10 @@ static bool lx_pcie_reset_force3(unsigned int domain)
 typedef bool (*pcie_reset_force_func)(unsigned int);
 pcie_reset_force_func get_pcie_reset_force_func(void)
 {
-	return  lx_pcie_reset_force3;
+	if ((dw_svr & 0xffff0000) == NXP_LX_BOARD)
+		return  lx_pcie_reset_force3;
+	else
+		return NULL;
 }
 EXPORT_SYMBOL(get_pcie_reset_force_func);
 

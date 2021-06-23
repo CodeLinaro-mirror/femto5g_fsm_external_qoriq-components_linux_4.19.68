@@ -593,7 +593,7 @@ static void fsm_dp_mempool_release(struct fsm_dp_mempool *mempool)
 	}
 }
 
-#define FSM_DP_MEMPOOL_RELEASE_SLEEP 20 /* 20 ms */
+#define FSM_DP_MEMPOOL_RELEASE_SLEEP 200 /* 200 ms */
 void fsm_dp_mempool_release_no_delay(struct fsm_dp_mempool *mempool)
 {
 	unsigned int out_xmit, out_xmit1;
@@ -952,3 +952,29 @@ struct fsm_dp_mempool *fsm_dp_find_mempool(
 	return NULL;
 }
 
+#define FSM_DP_SYNC_THRESHOLD 4
+bool fsm_dp_mem_ul_ring_sync(struct fsm_dp_drv *pdrv)
+{
+	struct fsm_dp_mempool *mempool = pdrv->mempool[FSM_DP_MEM_TYPE_UL];
+	struct fsm_dp_ring *ring = &mempool->ring;
+	struct fsm_dp_mhi *mhi = &pdrv->mhi;
+
+	if (*ring->prod_tail != pdrv->fsm_dp_prev_ul_prod_tail) {
+		pdrv->fsm_dp_outbuf_drop_sync = 0;
+		pdrv->fsm_dp_prev_ul_prod_tail = *ring->prod_tail;
+		return false;
+	}
+	if (pdrv->fsm_dp_outbuf_drop_sync++ >= FSM_DP_SYNC_THRESHOLD) {
+
+		if (*ring->prod_tail != *ring->prod_head) {
+			pr_warn("%s prod head %d prod tail %d\n", __func__,
+				*ring->prod_head, *ring->prod_tail);
+			*ring->prod_tail = *ring->prod_head;
+			mhi->stats.rx_resync++;
+			wmb();
+			pdrv->fsm_dp_outbuf_drop_sync = 0;
+			return true;
+		}
+	}
+	return false;
+}

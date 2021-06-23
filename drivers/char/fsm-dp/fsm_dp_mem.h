@@ -175,6 +175,8 @@ int fsm_dp_mempool_dma_map(
 	struct fsm_dp_mempool *mpool,
 	enum fsm_dp_mem_type type);
 
+bool fsm_dp_mem_ul_ring_sync(struct fsm_dp_drv *pdrv);
+
 /* inline */
 static __always_inline bool __ulong_in_range(
 	unsigned long v,

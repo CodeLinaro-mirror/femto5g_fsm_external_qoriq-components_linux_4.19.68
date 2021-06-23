@@ -625,6 +625,8 @@ static int debugfs_mhi_show(struct seq_file *s, void *unused)
 		   mhi->stats.rx_replenish_err);
 	seq_printf(s, "    RX_OUTOFBUF_DROP:   %lu\n",
 		   mhi->stats.rx_outofbuf_drop);
+	seq_printf(s, "    RX_OUTOFBUF_RESYNC: %lu\n",
+		   mhi->stats.rx_resync);
 	return 0;
 }
 DEFINE_DEBUGFS_OPS(debugfs_mhi, debugfs_mhi_show, NULL);

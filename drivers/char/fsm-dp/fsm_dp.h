@@ -216,6 +216,8 @@ struct fsm_dp_drv {
 	struct fsm_dp_core_stats stats;
 	struct work_struct alloc_work;
 	struct fsm_dp_traffic traffic;
+	unsigned int fsm_dp_outbuf_drop_sync;
+	fsm_dp_ring_index_t fsm_dp_prev_ul_prod_tail;
 
 #ifdef CONFIG_FSM_DP_TEST
 	struct fsm_dp_test_ring test_ring;

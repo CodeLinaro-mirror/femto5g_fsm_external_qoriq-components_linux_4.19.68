@@ -262,8 +262,12 @@ static void __mhi_dl_xfer_cb(
 
 	if (result->buf_addr == mempool->dummy_buf) {
 		mhi->stats.rx_outofbuf_drop++;
+
+		fsm_dp_mem_ul_ring_sync(drv);
+
 		return;
 	}
+	drv->fsm_dp_outbuf_drop_sync = 0;
 	if (result->transaction_status == -ENOTCONN) {
 		mhi->stats.rx_err++;
 		fsm_dp_mempool_put_buf(mempool, result->buf_addr);

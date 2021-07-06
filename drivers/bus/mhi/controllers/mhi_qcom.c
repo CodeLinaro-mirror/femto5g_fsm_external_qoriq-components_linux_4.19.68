@@ -38,6 +38,7 @@ struct firmware_info {
 
 static const struct firmware_info firmware_table[] = {
 	{.dev_id = 0x305, .fw_image = "fsm100xx/sbl1.mbn"},
+	{.dev_id = 0x308, .fw_image = "fsm100xx/xbl.elf"},
 	/* default, set to debug.mbn */
 	{.fw_image = "debug.mbn"},
 };
@@ -690,6 +691,7 @@ static struct pci_device_id mhi_pcie_device_id[] = {
 	{PCI_DEVICE(MHI_PCIE_VENDOR_ID, 0x0304)},
 	{PCI_DEVICE(MHI_PCIE_VENDOR_ID, 0x0305)},
 	{PCI_DEVICE(MHI_PCIE_VENDOR_ID, 0x0306)},
+	{PCI_DEVICE(MHI_PCIE_VENDOR_ID, 0x0308)},
 	{PCI_DEVICE(MHI_PCIE_VENDOR_ID, MHI_PCIE_DEBUG_ID)},
 	{0},
 };

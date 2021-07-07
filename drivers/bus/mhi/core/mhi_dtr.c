@@ -1,4 +1,4 @@
-/* Copyright (c) 2018-2019, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2018-2019, 2021 The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -56,7 +56,7 @@ static int mhi_dtr_tiocmset(struct mhi_controller *mhi_cntrl,
 
 	tiocm &= (TIOCM_DTR | TIOCM_RTS);
 
-	/* state did not change */
+	/* state did not changed */
 	if (cur_tiocm == tiocm)
 		return 0;
 
@@ -173,6 +173,9 @@ static void mhi_dtr_dl_xfer_cb(struct mhi_device *mhi_dev,
 	if (dtr_msg->msg & CTRL_MSG_RI)
 		mhi_dev->tiocm |= TIOCM_RI;
 	spin_unlock_irq(res_lock);
+
+	/* Notify the update */
+	mhi_notify(mhi_dev, MHI_CB_DTR_SIGNAL);
 }
 
 static void mhi_dtr_ul_xfer_cb(struct mhi_device *mhi_dev,

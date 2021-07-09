@@ -108,6 +108,7 @@
 				mhi,data-type = <0>;
 				mhi,doorbell-mode = <2>;
 				mhi,ee = <0x4>;
+				status = "disabled";
 			};
 
 			mhi_chan@9 {
@@ -119,6 +120,7 @@
 				mhi,data-type = <0>;
 				mhi,doorbell-mode = <2>;
 				mhi,ee = <0x4>;
+				status = "disabled";
 			};
 
 			mhi_chan@10 {
@@ -268,6 +270,7 @@
 				mhi,ee = <0x2>;
 				mhi,auto-queue;
 				mhi,auto-start;
+				status = "disabled";
 			};
 
 			mhi_chan@26 {
@@ -279,6 +282,7 @@
 				mhi,data-type = <0>;
 				mhi,doorbell-mode = <2>;
 				mhi,ee = <0x4>;
+				status = "disabled";
 			};
 
 			mhi_chan@27 {
@@ -290,6 +294,7 @@
 				mhi,data-type = <0>;
 				mhi,doorbell-mode = <2>;
 				mhi,ee = <0x4>;
+				status = "disabled";
 			};
 
 			mhi_chan@32 {
@@ -345,6 +350,7 @@
 				mhi,data-type = <3>;
 				mhi,ee = <0x4>;
 				mhi,offload-chan;
+				status = "disabled";
 			};
 
 			mhi_chan@105 {
@@ -356,6 +362,7 @@
 				mhi,ee = <0x4>;
 				mhi,offload-chan;
 				mhi,lpm-notify;
+				status = "disabled";
 			};
 		};
 
@@ -537,6 +544,7 @@
 				mhi,data-type = <0>;
 				mhi,doorbell-mode = <2>;
 				mhi,ee = <0x4>;
+				status = "disabled";
 			};
 
 			mhi_chan@9 {
@@ -548,6 +556,7 @@
 				mhi,data-type = <0>;
 				mhi,doorbell-mode = <2>;
 				mhi,ee = <0x4>;
+				status = "disabled";
 			};
 
 			mhi_chan@10 {
@@ -697,6 +706,7 @@
 				mhi,ee = <0x2>;
 				mhi,auto-queue;
 				mhi,auto-start;
+				status = "disabled";
 			};
 
 			mhi_chan@26 {
@@ -708,6 +718,7 @@
 				mhi,data-type = <0>;
 				mhi,doorbell-mode = <2>;
 				mhi,ee = <0x4>;
+				status = "disabled";
 			};
 
 			mhi_chan@27 {
@@ -719,6 +730,7 @@
 				mhi,data-type = <0>;
 				mhi,doorbell-mode = <2>;
 				mhi,ee = <0x4>;
+				status = "disabled";
 			};
 
 			mhi_chan@32 {
@@ -774,6 +786,7 @@
 				mhi,data-type = <3>;
 				mhi,ee = <0x4>;
 				mhi,offload-chan;
+				status = "disabled";
 			};
 
 			mhi_chan@105 {
@@ -785,6 +798,7 @@
 				mhi,ee = <0x4>;
 				mhi,offload-chan;
 				mhi,lpm-notify;
+				status = "disabled";
 			};
 		};
 

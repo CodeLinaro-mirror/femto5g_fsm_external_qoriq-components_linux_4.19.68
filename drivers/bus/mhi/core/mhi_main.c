@@ -2369,6 +2369,12 @@ static void __mhi_unprepare_channel(struct mhi_controller *mhi_cntrl,
 	mhi_chan->ch_state = MHI_CH_STATE_DISABLED;
 	write_unlock_irq(&mhi_chan->lock);
 
+	if (!(BIT(mhi_cntrl->ee) & mhi_chan->ee_mask)) {
+		MHI_LOG("Current EE: %s Required EE Mask: 0x%x\n",
+			TO_MHI_EXEC_STR(mhi_cntrl->ee), mhi_chan->ee_mask);
+		goto error_invalid_state;
+	}
+
 	reinit_completion(&mhi_chan->completion);
 	read_lock_bh(&mhi_cntrl->pm_lock);
 	if (MHI_PM_IN_ERROR_STATE(mhi_cntrl->pm_state)) {

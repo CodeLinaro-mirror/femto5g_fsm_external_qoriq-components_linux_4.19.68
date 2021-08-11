@@ -38,8 +38,8 @@ struct firmware_info {
 };
 
 static const struct firmware_info firmware_table[] = {
-	{.dev_id = 0x305, .fw_image = "fsm100xx/sbl1.mbn"},
-	{.dev_id = 0x308, .fw_image = "fsm100xx/xbl.elf"},
+	{.dev_id = 0x305, .fw_image = "fsm/sbl1.mbn"},
+	{.dev_id = 0x308, .fw_image = "fsm/xbl.elf"},
 	/* default, set to debug.mbn */
 	{.fw_image = "debug.mbn", .edl_image = "debug.mbn"},
 };

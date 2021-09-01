@@ -18,6 +18,7 @@
 #include <linux/termios.h>	/* For TIOCINQ/OUTQ */
 #include <linux/wait.h>
 #include <linux/rwsem.h>
+#include <linux/debugfs.h>
 //#include <linux/ipc_logging.h>
 #include <linux/uidgid.h>
 
@@ -25,9 +26,18 @@
 
 #include "qrtr.h"
 
+enum QRTR_DEBUG_LEVEL {
+	QRTR_DBG_LVL_CRITICAL,
+	QRTR_DBG_LVL_ERROR,
+	QRTR_DBG_LVL_INFO,
+	QRTR_DBG_LVL_VERBOSE,
+};
+
 #define QRTR_LOG_PAGE_CNT 4
-#define QRTR_INFO(ctx, x, ...)				\
-	pr_debug(x, ##__VA_ARGS__)
+#define QRTR_INFO(ctx, x, ...) do { \
+	if (unlikely(qrtr_log_lvl >= QRTR_DBG_LVL_INFO)) \
+		pr_info(x, ##__VA_ARGS__);\
+} while (0)
 
 #define QRTR_PROTO_VER_1 1
 #define QRTR_PROTO_VER_2 3
@@ -189,6 +199,46 @@ static int qrtr_local_enqueue(struct qrtr_node *node, struct sk_buff *skb,
 static int qrtr_bcast_enqueue(struct qrtr_node *node, struct sk_buff *skb,
 			      int type, struct sockaddr_qrtr *from,
 			      struct sockaddr_qrtr *to, unsigned int flags);
+
+static struct dentry *qrtr_debugfs_root = NULL;
+static u32 qrtr_log_lvl = 0;
+
+static int qrtr_debugfs_init(void)
+{
+	int rc = -EINVAL;
+	struct dentry *node, *root;
+
+	if (!qrtr_debugfs_root) {
+		root = debugfs_create_dir("qrtr", NULL);
+		if (!IS_ERR_OR_NULL(root))
+			qrtr_debugfs_root = root;
+	}
+
+	if (IS_ERR_OR_NULL(qrtr_debugfs_root))
+		return -EINVAL;
+
+	node = debugfs_create_u32("log_level", 0644, qrtr_debugfs_root, (u32 *)&qrtr_log_lvl);
+	if (IS_ERR_OR_NULL(node)) {
+		rc = -ENOMEM;
+		goto out;
+	}
+
+	return 0;
+
+out:
+	debugfs_remove_recursive(qrtr_debugfs_root);
+	return (rc);
+}
+
+static void qrtr_debugfs_deinit(void)
+{
+	if (IS_ERR_OR_NULL(qrtr_debugfs_root))
+		return;
+	debugfs_remove_recursive(qrtr_debugfs_root);
+	qrtr_log_lvl = 0;
+	qrtr_debugfs_root = NULL;
+	return;
+}
 
 static void qrtr_log_tx_msg(struct qrtr_node *node, struct qrtr_hdr_v1 *hdr,
 			    struct sk_buff *skb)
@@ -1573,6 +1623,10 @@ static int __init qrtr_proto_init(void)
 {
 	int rc;
 
+	rc = qrtr_debugfs_init();
+	if (rc)
+		return rc;
+
 	rc = proto_register(&qrtr_proto, 1);
 	if (rc)
 		return rc;
@@ -1598,6 +1652,7 @@ static void __exit qrtr_proto_fini(void)
 	rtnl_unregister(PF_QIPCRTR, RTM_NEWADDR);
 	sock_unregister(qrtr_family.family);
 	proto_unregister(&qrtr_proto);
+	qrtr_debugfs_deinit();
 }
 module_exit(qrtr_proto_fini);
 

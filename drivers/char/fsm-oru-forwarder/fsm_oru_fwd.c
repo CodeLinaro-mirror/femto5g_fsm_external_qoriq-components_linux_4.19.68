@@ -1646,7 +1646,8 @@ static int fsm_oru_forwarder_rcv(
 	}
 
 	if (!pfsm_forwarder->fwd_enable ||
-			fsm_oru_forwarder_netdev != orig_dev) {
+			fsm_oru_forwarder_netdev != ifp ||
+				!net_eq(dev_net(ifp), &init_net)) {
 		kfree_skb(skb);
 		pfsm_forwarder->fwd_stats.fwd_drop++;
 		return NET_RX_DROP;

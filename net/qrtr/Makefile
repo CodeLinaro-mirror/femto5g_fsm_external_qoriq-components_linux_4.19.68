@@ -1,5 +1,4 @@
 obj-$(CONFIG_QRTR) := qrtr.o
-CFLAGS_qrtr.o := -DDEBUG
 
 obj-$(CONFIG_QRTR_SMD) += qrtr-smd.o
 qrtr-smd-y	:= smd.o

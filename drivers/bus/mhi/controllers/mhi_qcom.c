@@ -609,6 +609,7 @@ static void mhi_status_cb(struct mhi_controller *mhi_cntrl,
 	struct device *dev = &mhi_dev->pci_dev->dev;
 	pcie_reset_force_func force_pcie_reset;
 	int ret;
+	u32 renegotiation = 1;
 
 	switch (reason) {
 	case MHI_CB_IDLE:
@@ -617,10 +618,9 @@ static void mhi_status_cb(struct mhi_controller *mhi_cntrl,
 		pm_request_autosuspend(dev);
 		break;
 	case MHI_CB_EE_MISSION_MODE:
-		/* evice id 0x0308 already configured with PCIe Gen-3,
-		 * force configuration is not required.
-		 */
-		if (mhi_cntrl->dev_id == 0x308)
+		ret = of_property_read_u32(mhi_cntrl->of_node,
+				"mhi,pcie-renegotiation", &renegotiation);
+		if((!ret) && (!renegotiation))
 			break;
 
 		/* force PCIe reset to bring PCIe EP to Gen 3 if PCIe controller supports it */

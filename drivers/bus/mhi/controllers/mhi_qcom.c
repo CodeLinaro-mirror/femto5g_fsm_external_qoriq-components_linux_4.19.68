@@ -618,10 +618,6 @@ static void mhi_status_cb(struct mhi_controller *mhi_cntrl,
 		pm_request_autosuspend(dev);
 		break;
 	case MHI_CB_EE_MISSION_MODE:
-		ret = of_property_read_u32(mhi_cntrl->of_node,
-				"mhi,pcie-renegotiation", &renegotiation);
-		if((!ret) && (!renegotiation))
-			break;
 
 		/* force PCIe reset to bring PCIe EP to Gen 3 if PCIe controller supports it */
 		force_pcie_reset = get_pcie_reset_force_func();

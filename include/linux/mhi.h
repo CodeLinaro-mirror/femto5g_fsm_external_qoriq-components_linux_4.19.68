@@ -269,7 +269,7 @@ struct reg_write_info {
  * @lpm_disable: Request controller to disable link level low power modes
  * @lpm_enable: Controller may enable link level low power modes again
  * @priv_data: Points to bus master's private data
- * @force_gen3: Explicit Gen-3 transition required or not
+ * @force_re_enum: Force PCIe link re-enumeration to potentially bump up speed
  */
 struct mhi_controller {
 	struct list_head node;
@@ -438,7 +438,7 @@ struct mhi_controller {
 	u32 read_idx;
 
 	bool mhi_removed;
-	bool force_gen3;
+	bool force_re_enum;
 };
 
 /**

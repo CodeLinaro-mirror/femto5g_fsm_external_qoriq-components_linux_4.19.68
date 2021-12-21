@@ -1516,7 +1516,7 @@ static int of_parse_dt(struct mhi_controller *mhi_cntrl,
 	ret = of_property_read_u32(mhi_cntrl->of_node,
 		"mhi,pcie-renegotiation", &renegotiation);
 	if((!ret) && (renegotiation))
-		mhi_cntrl->force_gen3 = true;
+		mhi_cntrl->force_re_enum = true;
 
 	return 0;
 

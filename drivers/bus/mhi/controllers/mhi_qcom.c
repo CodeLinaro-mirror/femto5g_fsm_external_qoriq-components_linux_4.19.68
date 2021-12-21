@@ -619,9 +619,12 @@ static void mhi_status_cb(struct mhi_controller *mhi_cntrl,
 		break;
 	case MHI_CB_EE_MISSION_MODE:
 
-		/* force PCIe reset to bring PCIe EP to Gen 3 if PCIe controller supports it */
+		/*
+		 * Force PCIe reset to allow re-negotiation of the PCIe link
+		 * with the EP to potentially allow for speed to be bumped up.
+		 */
 		force_pcie_reset = get_pcie_reset_force_func();
-		if (!mhi_cntrl->force_gen3 || force_pcie_reset == NULL)
+		if (!mhi_cntrl->force_re_enum || force_pcie_reset == NULL)
 			break;
 
 		ret = mhi_force_suspend(mhi_cntrl);

@@ -156,8 +156,8 @@ struct fsm_dp_aggrhdr {
  * maximum mtu size for FSM DP application, including fsm_dp header
  * Note, need to make sure both sides in sync between NPU, and Q6
  */
-#define FSM_DP_MAX_DL_MSG_LEN   ((16 * 1024) - FSM_DP_L1_CACHE_BYTES)
-#define FSM_DP_MAX_UL_MSG_LEN   ((16 * 1024) - FSM_DP_L1_CACHE_BYTES)
+#define FSM_DP_MAX_DL_MSG_LEN   (((64 * 1024) - 1) - FSM_DP_L1_CACHE_BYTES)
+#define FSM_DP_MAX_UL_MSG_LEN   (((64 * 1024) - 1) - FSM_DP_L1_CACHE_BYTES)
 
 struct fsm_dp_buf_cntrl {
 	uint32_t signature;

@@ -1,5 +1,7 @@
 /* Copyright (c) 2019-2020, The Linux Foundation. All rights reserved.
  *
+ * Copyright (c) 2022 Qualcomm Innovation Center, Inc. All rights reserved.
+ *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
  * only version 2 as published by the Free Software Foundation.
@@ -21,8 +23,12 @@
 #define FSM_TTI_IOCTL_INITIAL_SFN_SLOT_INFO	\
 		_IOW(FSM_TTI_IOCTL_BASE, 1, struct fsm_tti_mmap_info)
 
+#define FSM_TTI_MAX_SLOT_FOR_MMW	80
+#define FSM_TTI_MAX_SLOT_FOR_SUB6	20
+
 #define FSM_TTI_MAX_SFN_NUM		1024
 #define FSM_TTI_MAX_SFN_MOD_FACTOR	0x3FF /* equivalent to MOD 1024 */
+#define  FSM_TTI_INTR_RECV_SUB6_MOD_FACTOR	0x3 /* equivalent to MOD 4 */
 
 union sfn_slot_info
 {

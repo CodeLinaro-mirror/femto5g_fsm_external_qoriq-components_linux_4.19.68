@@ -1,5 +1,7 @@
 /* Copyright (c) 2019-2021, The Linux Foundation. All rights reserved.
  *
+ * Copyright (c) 2022 Qualcomm Innovation Center, Inc. All rights reserved.
+ *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
  * only version 2 as published by the Free Software Foundation.
@@ -68,6 +70,7 @@ struct fsm_tti_intr_drv {
 	struct fsm_tti_mmap_info *shared_data;
 	struct fsm_tti_internal_stats debugfs_stats;
 	unsigned int num_fsm;
+	unsigned long long tti_isr_count;
 };
 
 int fsm_tti_cdev_init(struct fsm_tti_intr_drv *tti_intr_drv);

@@ -28,19 +28,9 @@ static irqreturn_t fsm_tti_gpio_irq_handler(int irq, void *irq_data)
 	struct fsm_tti_intr_drv *tti_intr_drv =
 		(struct fsm_tti_intr_drv *)irq_data;
 
-	/* Update the SFN and slot number */
+	/* update the SFN and slot number */
 	sdata = tti_intr_drv->shared_data;
 	if (sdata && (tti_intr_drv->is_seeding_done)) {
-		/* Increment isr count */
-		tti_intr_drv->tti_isr_count++;
-
-		/* For Sub6, skip four isr call before updating application data */
-		if (sdata->max_slot == FSM_TTI_MAX_SLOT_FOR_SUB6) {
-			if ((tti_intr_drv->tti_isr_count &
-					FSM_TTI_INTR_RECV_SUB6_MOD_FACTOR) != 0)
-				return IRQ_HANDLED;
-		}
-
 		/* Update stats */
 		sdata->abs_recv_time = ktime_get();
 		tti_intr_drv->debugfs_stats.current_tti_recv_time =
@@ -68,10 +58,10 @@ static irqreturn_t fsm_tti_gpio_irq_handler(int irq, void *irq_data)
 		sdata->intr_recv_count = sdata->intr_recv_count + 1;
 		tti_intr_drv->debugfs_stats.current_tti_count =
 			sdata->intr_recv_count;
-		/* Make sure interrupt counts are updated */
+		/* Make sure timestamps are updated before sfn/slot */
 		smp_mb();
 
-		/* Wake up the poll ops */
+		/* wake up the poll ops */
 		if (tti_intr_drv->is_poll_enabled) {
 			atomic_set(&tti_intr_drv->tti_updated, 1);
 			wake_up(&tti_intr_drv->tti_poll_waitqueue);
@@ -196,7 +186,6 @@ static int __init fsm_tti_intr_probe(struct platform_device *pdev)
 		p->is_seeding_done = false;
 		p->is_poll_enabled = false;
 		p->is_first_tti_intr = false;
-		p->tti_isr_count = 0;
 		num_fsm++;
 	}
 probe_cont:

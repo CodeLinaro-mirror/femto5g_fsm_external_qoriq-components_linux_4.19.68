@@ -70,7 +70,6 @@ struct fsm_tti_intr_drv {
 	struct fsm_tti_mmap_info *shared_data;
 	struct fsm_tti_internal_stats debugfs_stats;
 	unsigned int num_fsm;
-	unsigned long long tti_isr_count;
 };
 
 int fsm_tti_cdev_init(struct fsm_tti_intr_drv *tti_intr_drv);

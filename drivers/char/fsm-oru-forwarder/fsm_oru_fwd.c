@@ -991,6 +991,7 @@ static void fsm_oru_xmit_queue_concat(
 	uint32_t plength, numseg;
 	int numskb, j;
 	struct ecpri_common_header *ecpri_hdr;
+	struct ecpri_common_header ecpri_hdr_buf;
 	void *xmit_ring;
 
 	if (type == FSM_ORU_MSG_TYPE_UPLANE)
@@ -1073,7 +1074,8 @@ again:
 		numseg += skb_shinfo(tskb)->nr_frags + 1;
 		if (pskb) {
 			ecpri_hdr = (struct ecpri_common_header *)
-					pskb->data;
+				skb_header_pointer(pskb, 0, sizeof(*ecpri_hdr),
+					&ecpri_hdr_buf);
 			ecpri_hdr->rev_c |= ECRPI_C_MASK;
 		}
 		pskb = tskb;
@@ -1514,6 +1516,7 @@ static void fsm_oru_xmit_work(struct work_struct *work)
 static int fsm_queue_tx_skb(struct sk_buff *skb)
 {
 	struct ecpri_common_header *ecpri_hdr;
+	struct ecpri_common_header ecpri_hdr_buf;
 	unsigned long pkt_cycle;
 	unsigned int type;
 	unsigned int ecpri_plen;
@@ -1524,7 +1527,8 @@ static int fsm_queue_tx_skb(struct sk_buff *skb)
 	fsm_dp_ring_element_data_t ring_element;
 	unsigned int flag, pcnt;
 
-	ecpri_hdr = (struct ecpri_common_header *) skb->data;
+	ecpri_hdr = (struct ecpri_common_header *)
+		skb_header_pointer(skb, 0, sizeof(*ecpri_hdr), &ecpri_hdr_buf);
 	type = ((ecpri_hdr->msg_type != ECPRI_MSG_IQ_DATA)
 			&& (ecpri_hdr->msg_type != ECPRI_MSG_BIT_SEQ));
 
